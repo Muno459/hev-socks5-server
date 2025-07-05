@@ -69,7 +69,14 @@ hev_socks5_session_bind (HevSocks5 *self, int fd, const struct sockaddr *dest)
     saddr = hev_config_get_bind_address (family);
     iface = hev_config_get_bind_interface ();
 
-    if (saddr) {
+    /* If user-specific source address is set, override now (before bind). */
+    if (srv->user) {
+        HevSocks5UserMark *user = HEV_SOCKS5_USER_MARK (srv->user);
+        if (user->addr && *user->addr)
+            saddr = user->addr;
+    }
+
+    if (saddr && *saddr) {
         struct sockaddr_in6 addr;
 
         res = hev_netaddr_resolve (&addr, saddr, NULL);
@@ -89,10 +96,6 @@ hev_socks5_session_bind (HevSocks5 *self, int fd, const struct sockaddr *dest)
 
     if (srv->user) {
         HevSocks5UserMark *user = HEV_SOCKS5_USER_MARK (srv->user);
-        /* Override global bind address if user-specific address provided */
-        if (user->addr && *user->addr)
-            saddr = user->addr;
-
         mark = user->mark;
     }
 
