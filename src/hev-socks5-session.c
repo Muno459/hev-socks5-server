@@ -89,6 +89,10 @@ hev_socks5_session_bind (HevSocks5 *self, int fd, const struct sockaddr *dest)
 
     if (srv->user) {
         HevSocks5UserMark *user = HEV_SOCKS5_USER_MARK (srv->user);
+        /* Override global bind address if user-specific address provided */
+        if (user->addr && *user->addr)
+            saddr = user->addr;
+
         mark = user->mark;
     }
 

@@ -55,18 +55,29 @@ hev_socks5_proxy_load_file (HevSocks5Authenticator *auth, const char *file)
         unsigned int plen;
         char name[256];
         char pass[256];
+        char addr[256];
         long mark = 0;
         int res;
 
-        res = sscanf (line, "%255s %255s %lx\n", name, pass, &mark);
+        addr[0] = '\0';
+        /* username password [mark] [addr] */
+        res = sscanf (line, "%255s %255s %lx %255s\n", name, pass, &mark, addr);
         if (res < 2) {
             LOG_E ("socks5 proxy user/pass format");
             continue;
         }
 
+        if (res < 3) {
+            mark = 0;
+            addr[0] = '\0';
+        } else if (res < 4) {
+            addr[0] = '\0';
+        }
+
         nlen = strlen (name);
         plen = strlen (pass);
-        user = hev_socks5_user_mark_new (name, nlen, pass, plen, mark);
+        user = hev_socks5_user_mark_new (name, nlen, pass, plen, (unsigned int)mark,
+                                         addr[0] ? addr : NULL);
         if (!user) {
             LOG_E ("socks5 proxy user new");
             continue;
@@ -108,7 +119,7 @@ hev_socks5_proxy_load (void)
         HevSocks5UserMark *user;
 
         user = hev_socks5_user_mark_new (name, strlen (name), pass,
-                                         strlen (pass), 0);
+                                         strlen (pass), 0, NULL);
         if (user)
             hev_socks5_authenticator_add (auth, HEV_SOCKS5_USER (user));
     }

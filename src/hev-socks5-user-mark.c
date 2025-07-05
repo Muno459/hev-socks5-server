@@ -17,7 +17,7 @@
 HevSocks5UserMark *
 hev_socks5_user_mark_new (const char *name, unsigned int name_len,
                           const char *pass, unsigned int pass_len,
-                          unsigned int mark)
+                          unsigned int mark, const char *addr)
 {
     HevSocks5UserMark *self;
     int res;
@@ -27,7 +27,7 @@ hev_socks5_user_mark_new (const char *name, unsigned int name_len,
         return NULL;
 
     res = hev_socks5_user_mark_construct (self, name, name_len, pass, pass_len,
-                                          mark);
+                                          mark, addr);
     if (res < 0) {
         free (self);
         return NULL;
@@ -41,7 +41,8 @@ hev_socks5_user_mark_new (const char *name, unsigned int name_len,
 int
 hev_socks5_user_mark_construct (HevSocks5UserMark *self, const char *name,
                                 unsigned int name_len, const char *pass,
-                                unsigned int pass_len, unsigned int mark)
+                                unsigned int pass_len, unsigned int mark,
+                                const char *addr)
 {
     int res;
 
@@ -56,6 +57,12 @@ hev_socks5_user_mark_construct (HevSocks5UserMark *self, const char *name,
 
     self->mark = mark;
 
+    if (addr && *addr) {
+        self->addr = strdup (addr);
+        if (!self->addr)
+            return -1;
+    }
+
     return 0;
 }
 
@@ -65,6 +72,9 @@ hev_socks5_user_mark_destruct (HevObject *base)
     HevSocks5UserMark *self = HEV_SOCKS5_USER_MARK (base);
 
     LOG_D ("%p socks5 user mark destruct", self);
+
+    if (self->addr)
+        free (self->addr);
 
     HEV_SOCKS5_USER_TYPE->destruct (base);
 }

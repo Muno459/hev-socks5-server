@@ -129,12 +129,17 @@ main:
 ### Authentication file
 
 ```
-<USERNAME> <SPACE> <PASSWORD> <SPACE> <MARK> <LF>
+<USERNAME> <SPACE> <PASSWORD> <SPACE> <MARK> <SPACE> <SRC_IP> <LF>
 ```
 
 - USERNAME: A string of up to 255 characters
 - PASSWORD: A string of up to 255 characters
 - MARK: Hexadecimal
+- SRC_IP: (Optional) IPv4 or IPv6 literal address to be used as the
+  source address for all outbound connections established by this user.
+  If omitted, the global bind-address configuration (if any) will be used.
+  When you only need to set SRC_IP and do not require a socket mark,
+  set MARK to `0`.
 
 ### Run
 

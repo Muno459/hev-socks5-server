@@ -28,6 +28,9 @@ struct _HevSocks5UserMark
     HevSocks5User base;
 
     unsigned int mark;
+
+    /* Optional source address (IPv4/IPv6 literal) */
+    char *addr;
 };
 
 struct _HevSocks5UserMarkClass
@@ -39,13 +42,15 @@ HevObjectClass *hev_socks5_user_mark_class (void);
 
 int hev_socks5_user_mark_construct (HevSocks5UserMark *self, const char *name,
                                     unsigned int name_len, const char *pass,
-                                    unsigned int pass_len, unsigned int mark);
+                                    unsigned int pass_len, unsigned int mark,
+                                    const char *addr);
 
 HevSocks5UserMark *hev_socks5_user_mark_new (const char *name,
                                              unsigned int name_len,
                                              const char *pass,
                                              unsigned int pass_len,
-                                             unsigned int mark);
+                                             unsigned int mark,
+                                             const char *addr);
 
 #ifdef __cplusplus
 }
