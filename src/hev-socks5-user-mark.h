@@ -28,6 +28,7 @@ struct _HevSocks5UserMark
     HevSocks5User base;
 
     unsigned int mark;
+    char *iface;
 };
 
 struct _HevSocks5UserMarkClass

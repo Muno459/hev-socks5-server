@@ -14,6 +14,8 @@
 #include <unistd.h>
 #include <pthread.h>
 
+#include <yaml.h>
+
 #include <hev-task.h>
 #include <hev-task-system.h>
 #include <hev-memory-allocator.h>
@@ -36,11 +38,12 @@ static HevSocketFactory *factory;
 static HevSocks5Worker **worker_list;
 
 static void
-hev_socks5_proxy_load_file (HevSocks5Authenticator *auth, const char *file)
+hev_socks5_proxy_load_file_yaml (HevSocks5Authenticator *auth,
+                                 const char *file)
 {
-    char *line = NULL;
-    size_t len = 0;
-    ssize_t nread;
+    yaml_parser_t parser;
+    yaml_document_t doc;
+    yaml_node_t *root;
     FILE *fp;
 
     fp = fopen (file, "r");
@@ -49,6 +52,164 @@ hev_socks5_proxy_load_file (HevSocks5Authenticator *auth, const char *file)
         return;
     }
 
+    if (!yaml_parser_initialize (&parser)) {
+        fclose (fp);
+        hev_object_unref (HEV_OBJECT (auth));
+        return;
+    }
+
+    yaml_parser_set_input_file (&parser, fp);
+    if (!yaml_parser_load (&parser, &doc)) {
+        yaml_parser_delete (&parser);
+        fclose (fp);
+        hev_object_unref (HEV_OBJECT (auth));
+        return;
+    }
+
+    root = yaml_document_get_root_node (&doc);
+    if (root && root->type == YAML_SEQUENCE_NODE) {
+        yaml_node_item_t *item;
+        for (item = root->data.sequence.items.start;
+             item < root->data.sequence.items.top; item++) {
+            yaml_node_t *node = yaml_document_get_node (&doc, *item);
+            if (!node || node->type != YAML_MAPPING_NODE)
+                continue;
+
+            char *username = NULL;
+            char *password = NULL;
+            char *iface = NULL;
+            unsigned long mark = 0;
+
+            yaml_node_pair_t *pair;
+            for (pair = node->data.mapping.pairs.start;
+                 pair < node->data.mapping.pairs.top; pair++) {
+                yaml_node_t *k = yaml_document_get_node (&doc, pair->key);
+                yaml_node_t *v = yaml_document_get_node (&doc, pair->value);
+                if (!k || !v || k->type != YAML_SCALAR_NODE ||
+                    v->type != YAML_SCALAR_NODE)
+                    continue;
+                const char *key = (const char *)k->data.scalar.value;
+                const char *val = (const char *)v->data.scalar.value;
+                if (0 == strcmp (key, "username"))
+                    username = (char *)val;
+                else if (0 == strcmp (key, "password"))
+                    password = (char *)val;
+                else if (0 == strcmp (key, "mark"))
+                    mark = strtoul (val, NULL, 0);
+                else if (0 == strcmp (key, "iface"))
+                    iface = (char *)val;
+            }
+
+            if (username && password) {
+                HevSocks5UserMark *user;
+                user = hev_socks5_user_mark_new (username, strlen (username),
+                                                 password, strlen (password),
+                                                 (unsigned int)mark);
+                if (!user)
+                    continue;
+                if (iface && iface[0] != '\0')
+                    user->iface = strdup (iface);
+                if (hev_socks5_authenticator_add (auth,
+                                                  HEV_SOCKS5_USER (user)) < 0)
+                    hev_object_unref (HEV_OBJECT (user));
+            }
+        }
+    } else if (root && root->type == YAML_MAPPING_NODE) {
+        /* Support { "users": [ ... ] } */
+        yaml_node_pair_t *pair;
+        for (pair = root->data.mapping.pairs.start;
+             pair < root->data.mapping.pairs.top; pair++) {
+            yaml_node_t *k = yaml_document_get_node (&doc, pair->key);
+            yaml_node_t *v = yaml_document_get_node (&doc, pair->value);
+            if (!k || !v || k->type != YAML_SCALAR_NODE)
+                continue;
+            const char *key = (const char *)k->data.scalar.value;
+            if (0 == strcmp (key, "users") && v->type == YAML_SEQUENCE_NODE) {
+                yaml_node_item_t *item;
+                for (item = v->data.sequence.items.start;
+                     item < v->data.sequence.items.top; item++) {
+                    yaml_node_t *node = yaml_document_get_node (&doc, *item);
+                    if (!node || node->type != YAML_MAPPING_NODE)
+                        continue;
+                    char *username = NULL;
+                    char *password = NULL;
+                    char *iface = NULL;
+                    unsigned long mark = 0;
+                    yaml_node_pair_t *mpair;
+                    for (mpair = node->data.mapping.pairs.start;
+                         mpair < node->data.mapping.pairs.top; mpair++) {
+                        yaml_node_t *mk =
+                            yaml_document_get_node (&doc, mpair->key);
+                        yaml_node_t *mv =
+                            yaml_document_get_node (&doc, mpair->value);
+                        if (!mk || !mv || mk->type != YAML_SCALAR_NODE ||
+                            mv->type != YAML_SCALAR_NODE)
+                            continue;
+                        const char *mkey =
+                            (const char *)mk->data.scalar.value;
+                        const char *mval =
+                            (const char *)mv->data.scalar.value;
+                        if (0 == strcmp (mkey, "username"))
+                            username = (char *)mval;
+                        else if (0 == strcmp (mkey, "password"))
+                            password = (char *)mval;
+                        else if (0 == strcmp (mkey, "mark"))
+                            mark = strtoul (mval, NULL, 0);
+                        else if (0 == strcmp (mkey, "iface"))
+                            iface = (char *)mval;
+                    }
+                    if (username && password) {
+                        HevSocks5UserMark *user;
+                        user = hev_socks5_user_mark_new (
+                            username, strlen (username), password,
+                            strlen (password), (unsigned int)mark);
+                        if (!user)
+                            continue;
+                        if (iface && iface[0] != '\0')
+                            user->iface = strdup (iface);
+                        if (hev_socks5_authenticator_add (
+                                auth, HEV_SOCKS5_USER (user)) < 0)
+                            hev_object_unref (HEV_OBJECT (user));
+                    }
+                }
+            }
+        }
+    }
+
+    yaml_document_delete (&doc);
+    yaml_parser_delete (&parser);
+    fclose (fp);
+}
+
+static void
+hev_socks5_proxy_load_file (HevSocks5Authenticator *auth, const char *file)
+{
+    char *line = NULL;
+    size_t len = 0;
+    ssize_t nread;
+    FILE *fp;
+    int c;
+
+    fp = fopen (file, "r");
+    if (!fp) {
+        hev_object_unref (HEV_OBJECT (auth));
+        return;
+    }
+
+    /* Detect JSON/YAML document and delegate */
+    do {
+        c = fgetc (fp);
+        if (c == EOF)
+            break;
+    } while (c == ' ' || c == '\t' || c == '\r' || c == '\n');
+    if (c == '{' || c == '[') {
+        fclose (fp);
+        hev_socks5_proxy_load_file_yaml (auth, file);
+        return;
+    }
+    /* Not JSON/YAML sequence, rewind and parse legacy format */
+    rewind (fp);
+
     while ((nread = getline (&line, &len, fp)) != -1) {
         HevSocks5UserMark *user;
         unsigned int nlen;
@@ -56,9 +217,19 @@ hev_socks5_proxy_load_file (HevSocks5Authenticator *auth, const char *file)
         char name[256];
         char pass[256];
         long mark = 0;
+        char iface[256] = { 0 };
         int res;
 
-        res = sscanf (line, "%255s %255s %lx\n", name, pass, &mark);
+        /* Format: USER PASS [MARK] [SRC_IP] [IFACE]
+         * We keep backward compatibility. We parse up to 5 tokens, but only
+         * the 1st two are mandatory. MARK remains hexadecimal; IFACE is
+         * optional here to bind to device.
+         */
+        res = sscanf (line, "%255s %255s %lx %*255s %255s\n", name, pass, &mark, iface);
+        if (res < 2) {
+            /* Try legacy 3-field form */
+            res = sscanf (line, "%255s %255s %lx\n", name, pass, &mark);
+        }
         if (res < 2) {
             LOG_E ("socks5 proxy user/pass format");
             continue;
@@ -70,6 +241,9 @@ hev_socks5_proxy_load_file (HevSocks5Authenticator *auth, const char *file)
         if (!user) {
             LOG_E ("socks5 proxy user new");
             continue;
+        }
+        if (iface[0] != '\0') {
+            user->iface = strdup (iface);
         }
         res = hev_socks5_authenticator_add (auth, HEV_SOCKS5_USER (user));
         if (res < 0) {

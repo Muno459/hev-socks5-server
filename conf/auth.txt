@@ -1,2 +1,4 @@
 tom pass
 jerry pass 1a
+# Example with interface only (no mark, no src ip)
+alice pass 0  ::  wlan0

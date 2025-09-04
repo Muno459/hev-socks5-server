@@ -129,12 +129,25 @@ main:
 ### Authentication file
 
 ```
-<USERNAME> <SPACE> <PASSWORD> <SPACE> <MARK> <LF>
+<USERNAME> <SPACE> <PASSWORD> [<SPACE> <MARK>] [<SPACE> <SRC_IP>] [<SPACE> <IFACE>] <LF>
+
+or JSON:
+
+[
+  { "username": "tom", "password": "pass" },
+  { "username": "jerry", "password": "pass", "mark": 0x1a },
+  { "username": "alice", "password": "pass", "iface": "wlan0" }
+]
 ```
 
 - USERNAME: A string of up to 255 characters
 - PASSWORD: A string of up to 255 characters
-- MARK: Hexadecimal
+- MARK: Hexadecimal. Optional; use `0` if unused.
+- SRC_IP: (Optional) IPv4 or IPv6 literal source address. If omitted, the
+  global `bind-address` or `bind-address-v{4,6}` is used.
+- IFACE: (Optional) Name of the network interface to bind sockets to for this
+  user (e.g. `eth0`, `wlan0`, `en0`). If present, it overrides global
+  `bind-interface`.
 
 ### Run
 

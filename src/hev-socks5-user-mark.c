@@ -66,6 +66,8 @@ hev_socks5_user_mark_destruct (HevObject *base)
 
     LOG_D ("%p socks5 user mark destruct", self);
 
+    if (self->iface)
+        free (self->iface);
     HEV_SOCKS5_USER_TYPE->destruct (base);
 }
 

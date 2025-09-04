@@ -81,6 +81,12 @@ hev_socks5_session_bind (HevSocks5 *self, int fd, const struct sockaddr *dest)
             return -1;
     }
 
+    if (srv->user) {
+        HevSocks5UserMark *user = HEV_SOCKS5_USER_MARK (srv->user);
+        if (user->iface)
+            iface = user->iface;
+    }
+
     if (iface) {
         res = set_sock_bind (fd, iface);
         if (res < 0)
