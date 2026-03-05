@@ -49,17 +49,28 @@ hev_socks5_server_main_inner (void)
     const char *pid_file;
     const char *log_file;
     int log_level;
+    int timeout;
     int nofile;
     int res;
 
     log_file = hev_config_get_misc_log_file ();
     log_level = hev_config_get_misc_log_level ();
 
+    timeout = hev_config_get_misc_connect_timeout ();
+    hev_socks5_set_connect_timeout (timeout);
+    timeout = hev_config_get_misc_tcp_read_write_timeout ();
+    hev_socks5_set_tcp_timeout (timeout);
+    timeout = hev_config_get_misc_udp_read_write_timeout ();
+    hev_socks5_set_udp_timeout (timeout);
+
     res = hev_config_get_misc_task_stack_size ();
     hev_socks5_set_task_stack_size (res);
 
     res = hev_config_get_misc_udp_recv_buffer_size ();
     hev_socks5_set_udp_recv_buffer_size (res);
+
+    res = hev_config_get_misc_udp_copy_buffer_nums ();
+    hev_socks5_set_udp_copy_buffer_nums (res);
 
     res = hev_logger_init (log_level, log_file);
     if (res < 0)

@@ -21,6 +21,7 @@ const char *hev_config_get_listen_address (void);
 const char *hev_config_get_listen_port (void);
 const char *hev_config_get_udp_listen_address (void);
 int hev_config_get_udp_listen_port (void);
+const char *hev_config_get_udp_public_address (int family);
 int hev_config_get_listen_ipv6_only (void);
 
 const char *hev_config_get_bind_address (int family);
@@ -35,8 +36,10 @@ const char *hev_config_get_auth_password (void);
 
 int hev_config_get_misc_task_stack_size (void);
 int hev_config_get_misc_udp_recv_buffer_size (void);
+int hev_config_get_misc_udp_copy_buffer_nums (void);
 int hev_config_get_misc_connect_timeout (void);
-int hev_config_get_misc_read_write_timeout (void);
+int hev_config_get_misc_tcp_read_write_timeout (void);
+int hev_config_get_misc_udp_read_write_timeout (void);
 int hev_config_get_misc_limit_nofile (void);
 const char *hev_config_get_misc_pid_file (void);
 const char *hev_config_get_misc_log_file (void);

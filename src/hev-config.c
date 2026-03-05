@@ -23,6 +23,7 @@ static int listen_ipv6_only;
 static char listen_address[256];
 static char listen_port[8];
 static char udp_listen_address[256];
+static char udp_public_address[2][256];
 static char bind_address[2][256];
 static char bind_interface[256];
 static char auth_file[1024];
@@ -34,8 +35,10 @@ static int udp_listen_port_beg;
 static int udp_listen_port_mod;
 static int task_stack_size = 8192;
 static int udp_recv_buffer_size = 524288;
-static int connect_timeout = 5000;
-static int read_write_timeout = 60000;
+static int udp_copy_buffer_nums = 10;
+static int connect_timeout = 10000;
+static int tcp_read_write_timeout = 300000;
+static int udp_read_write_timeout = 60000;
 static int limit_nofile = 65535;
 static int log_level = HEV_LOGGER_WARN;
 static int addr_family = HEV_SOCKS5_ADDR_FAMILY_UNSPEC;
@@ -49,6 +52,8 @@ hev_config_parse_main (yaml_document_t *doc, yaml_node_t *base)
     const char *port = NULL;
     const char *mark = NULL;
     const char *udp_addr = NULL;
+    const char *udp_addr4 = NULL;
+    const char *udp_addr6 = NULL;
     const char *udp_port = NULL;
     const char *bind_saddr = NULL;
     const char *bind_saddr4 = NULL;
@@ -87,6 +92,10 @@ hev_config_parse_main (yaml_document_t *doc, yaml_node_t *base)
             udp_port = value;
         else if (0 == strcmp (key, "udp-listen-address"))
             udp_addr = value;
+        else if (0 == strcmp (key, "udp-public-address-v4"))
+            udp_addr4 = value;
+        else if (0 == strcmp (key, "udp-public-address-v6"))
+            udp_addr6 = value;
         else if (0 == strcmp (key, "listen-ipv6-only"))
             listen_ipv6_only = (0 == strcasecmp (value, "true")) ? 1 : 0;
         else if (0 == strcmp (key, "bind-address"))
@@ -145,6 +154,10 @@ hev_config_parse_main (yaml_document_t *doc, yaml_node_t *base)
 
     if (udp_addr)
         strncpy (udp_listen_address, udp_addr, 256 - 1);
+    if (udp_addr4)
+        strncpy (udp_public_address[0], udp_addr4, 256 - 1);
+    if (udp_addr6)
+        strncpy (udp_public_address[1], udp_addr6, 256 - 1);
 
     if (bind_saddr4 && bind_saddr4[0] != '\0')
         strncpy (bind_address[0], bind_saddr4, 256 - 1);
@@ -233,6 +246,9 @@ static int
 hev_config_parse_misc (yaml_document_t *doc, yaml_node_t *base)
 {
     yaml_node_pair_t *pair;
+    int tcp_rw_timeout = -1;
+    int udp_rw_timeout = -1;
+    int rw_timeout = -1;
 
     if (!base || YAML_MAPPING_NODE != base->type)
         return -1;
@@ -259,10 +275,16 @@ hev_config_parse_misc (yaml_document_t *doc, yaml_node_t *base)
             task_stack_size = strtoul (value, NULL, 10);
         else if (0 == strcmp (key, "udp-recv-buffer-size"))
             udp_recv_buffer_size = strtoul (value, NULL, 10);
+        else if (0 == strcmp (key, "udp-copy-buffer-nums"))
+            udp_copy_buffer_nums = strtoul (value, NULL, 10);
         else if (0 == strcmp (key, "connect-timeout"))
             connect_timeout = strtoul (value, NULL, 10);
         else if (0 == strcmp (key, "read-write-timeout"))
-            read_write_timeout = strtoul (value, NULL, 10);
+            rw_timeout = strtoul (value, NULL, 10);
+        else if (0 == strcmp (key, "tcp-read-write-timeout"))
+            tcp_rw_timeout = strtoul (value, NULL, 10);
+        else if (0 == strcmp (key, "udp-read-write-timeout"))
+            udp_rw_timeout = strtoul (value, NULL, 10);
         else if (0 == strcmp (key, "pid-file"))
             strncpy (pid_file, value, 1024 - 1);
         else if (0 == strcmp (key, "log-file"))
@@ -272,6 +294,16 @@ hev_config_parse_misc (yaml_document_t *doc, yaml_node_t *base)
         else if (0 == strcmp (key, "limit-nofile"))
             limit_nofile = strtol (value, NULL, 10);
     }
+
+    if (tcp_rw_timeout <= 0)
+        tcp_rw_timeout = rw_timeout;
+    if (udp_rw_timeout <= 0)
+        udp_rw_timeout = rw_timeout;
+
+    if (tcp_rw_timeout > 0)
+        tcp_read_write_timeout = tcp_rw_timeout;
+    if (udp_rw_timeout > 0)
+        udp_read_write_timeout = udp_rw_timeout;
 
     return 0;
 }
@@ -421,6 +453,17 @@ hev_config_get_udp_listen_port (void)
     return udp_listen_port_beg + (cur % udp_listen_port_mod);
 }
 
+const char *
+hev_config_get_udp_public_address (int family)
+{
+    int idx = family == AF_INET6;
+
+    if ('\0' == udp_public_address[idx][0])
+        return NULL;
+
+    return udp_public_address[idx];
+}
+
 int
 hev_config_get_listen_ipv6_only (void)
 {
@@ -499,15 +542,27 @@ hev_config_get_misc_udp_recv_buffer_size (void)
 }
 
 int
+hev_config_get_misc_udp_copy_buffer_nums (void)
+{
+    return udp_copy_buffer_nums;
+}
+
+int
 hev_config_get_misc_connect_timeout (void)
 {
     return connect_timeout;
 }
 
 int
-hev_config_get_misc_read_write_timeout (void)
+hev_config_get_misc_tcp_read_write_timeout (void)
 {
-    return read_write_timeout;
+    return tcp_read_write_timeout;
+}
+
+int
+hev_config_get_misc_udp_read_write_timeout (void)
+{
+    return udp_read_write_timeout;
 }
 
 int
