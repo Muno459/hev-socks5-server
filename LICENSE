@@ -1,19 +1,50 @@
-Copyright (c) 2024 hev
+SkyProxy Non-Commercial License
 
-Permission is hereby granted, free of charge, to any person obtaining a copy of
-this software and associated documentation files (the "Software"), to deal in
-the Software without restriction, including without limitation the rights to
-use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
-of the Software, and to permit persons to whom the Software is furnished to do
-so, subject to the following conditions:
+Copyright (c) 2026 Muno459
+All rights reserved.
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+Based on hev-socks5-server by hev (https://hev.cc), originally licensed
+under the MIT License. This fork contains substantial modifications and
+additions by Muno459.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to use, copy, modify, merge, and distribute the Software, subject to the
+following conditions:
+
+1. NON-COMMERCIAL USE ONLY. The Software may not be used, in whole or in
+   part, for any commercial purpose. Commercial purpose includes, but is
+   not limited to: selling the Software, offering the Software as part of
+   a paid service, using the Software to generate revenue, or incorporating
+   the Software into a product or service that is sold or monetized.
+
+2. ATTRIBUTION REQUIRED. Any use, distribution, or derivative work of the
+   Software must include clear and prominent attribution to:
+
+       Muno459 - https://github.com/Muno459
+
+   This attribution must appear in:
+   (a) the source code (in LICENSE or equivalent file),
+   (b) any documentation accompanying the Software, and
+   (c) any user-facing interface or output, where applicable.
+
+3. DERIVATIVE WORKS. You may modify and distribute derivative works under
+   the same terms as this license. You may not apply additional restrictions
+   or relicense the Software under different terms.
+
+4. KERNEL MODULE. The kernel module component (src/dkms/) is additionally
+   licensed under the GNU General Public License v2.0 (GPL-2.0) as required
+   by the Linux kernel. The non-commercial restriction and attribution
+   requirement above still apply to the kernel module source code.
+
+5. UPSTREAM CREDIT. This software is built on hev-socks5-server by hev
+   (https://hev.cc), which is licensed under the MIT License. The original
+   MIT license applies to unmodified portions of the upstream code.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS
+OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
