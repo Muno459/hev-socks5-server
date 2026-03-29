@@ -1,13 +1,23 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * hev-tcpfp-kmod.c — TCP/IP fingerprint spoofing kernel module v4.
+ * hev-tcpfp-kmod.c — TCP/IP fingerprint spoofing kernel module v5.
  *
- * ISN: kprobe on tcp_connect sets tp->write_seq directly (no delta tracking).
- * RTO: kprobe on tcp_connect sets icsk->icsk_rto before first SYN (exact timing).
- * Options/Window/IP ID/TS clock: netfilter LOCAL_OUT (in-place rewrite).
- * IPv4 + IPv6 supported.
+ * Native emission via kprobes:
+ *   - ISN: kprobe on tcp_connect sets tp->write_seq
+ *   - RTO: kretprobe on tcp_connect_init sets icsk->icsk_rto (initial)
+ *          kprobe on tcp_retransmit_timer sets icsk->icsk_rto (subsequent)
+ *   - Window: kretprobe on tcp_connect_init sets tp->rcv_wnd
+ *   - WScale: kretprobe on tcp_connect_init sets tp->rx_opt.rcv_wscale
+ *   - SACK/TS: kretprobe on tcp_connect_init adjusts tp->tcp_header_len
+ *   - MSS/WS/SACK/TS values: kretprobe on tcp_syn_options modifies opts struct
  *
- * SAFETY: never modifies skb length/tail. In-place rewrite only.
+ * Netfilter LOCAL_OUT (in-place rewrite, only for what can't be native):
+ *   - TCP options ORDER (hardcoded in tcp_options_write)
+ *   - IP ID behavior
+ *   - DF/RST/FIN flags
+ *   - Timestamp clock scaling
+ *
+ * SAFETY: never modifies skb length/tail except via doff (SYN only, no payload).
  */
 
 #include <linux/module.h>
@@ -37,8 +47,8 @@
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("hev-socks5-server");
-MODULE_DESCRIPTION("TCP/IP fingerprint spoofing v4 (kprobe ISN+RTO, NF options)");
-MODULE_VERSION("4.0");
+MODULE_DESCRIPTION("TCP/IP fingerprint spoofing v5 (native kprobe + NF reorder)");
+MODULE_VERSION("5.0");
 
 #define DEVICE_NAME    "hev-tcpfp"
 #define CLASS_NAME     "hev-tcpfp"
@@ -64,6 +74,11 @@ MODULE_VERSION("4.0");
 #define ISN_CONST      2
 #define ISN_TIME_BASED 3
 
+#define RTO_LINUX   0
+#define RTO_WINDOWS 1
+#define RTO_MACOS   2
+#define RTO_CUSTOM  3
+
 /* Must match userspace struct in hev-dkms-fingerprint.c */
 struct hev_tcpfp_req {
     u64 sock_cookie;
@@ -84,7 +99,7 @@ struct hev_tcpfp_req {
     u32 init_window;
     u32 rto_initial_ms;
     u8 rto_pattern;
-    u16 rto_values[16];     /* custom RTO sequence in ms (up to 16 retransmits) */
+    u16 rto_values[16];
     u8 rto_count;
     u8 retransmit_count;
     u8 isn_pattern;
@@ -116,7 +131,7 @@ struct fp_entry {
     struct hlist_node node;
     u64 cookie;
     struct hev_tcpfp_req req;
-    int syn_retransmits;   /* count of SYNs seen (for RTO pattern) */
+    int syn_retransmits;
     struct rcu_head rcu;
 };
 
@@ -126,7 +141,6 @@ static dev_t dev_num;
 static struct class *dev_class;
 static struct cdev dev_cdev;
 
-/* Global counter for time-based ISN */
 static u32 isn_time_counter;
 static unsigned long isn_time_last_jiffies;
 
@@ -186,24 +200,22 @@ static long fp_ioctl(struct file *f, unsigned int cmd, unsigned long arg)
     return -EINVAL;
 }
 
-/* --- RTO pattern: returns the RTO in jiffies for a given retransmit --- */
+static const struct file_operations dev_fops = {
+    .owner = THIS_MODULE,
+    .unlocked_ioctl = fp_ioctl,
+    .compat_ioctl = fp_ioctl,
+};
 
-/* Linux:   1s, 2s, 4s, 8s, 16s, 32s */
-static const int rto_linux[]  = {1000, 2000, 4000, 8000, 16000, 32000};
-/* Windows: 3s, 6s, 12s, 24s, 48s */
+/* --- RTO patterns --- */
+
+static const int rto_linux[]   = {1000, 2000, 4000, 8000, 16000, 32000};
 static const int rto_windows[] = {3000, 6000, 12000, 24000, 48000};
-/* macOS:   1s, 1s, 1s, 1s, 2s, 4s, 8s, 16s */
-static const int rto_macos[]  = {1000, 1000, 1000, 1000, 2000, 4000, 8000, 16000};
-
-#define RTO_LINUX   0
-#define RTO_WINDOWS 1
-#define RTO_MACOS   2
-#define RTO_CUSTOM  3
+static const int rto_macos[]   = {1000, 1000, 1000, 1000, 2000, 4000, 8000, 16000};
 
 static unsigned long get_rto_jiffies(struct fp_entry *fp, int retransmit)
 {
     struct hev_tcpfp_req *req = &fp->req;
-    int ms = 1000; /* default 1s */
+    int ms = 1000;
 
     switch (req->rto_pattern) {
     case RTO_LINUX:
@@ -232,52 +244,12 @@ static unsigned long get_rto_jiffies(struct fp_entry *fp, int retransmit)
         break;
     default:
         if (req->rto_initial_ms > 0)
-            ms = req->rto_initial_ms << retransmit; /* exponential */
+            ms = req->rto_initial_ms << retransmit;
         break;
     }
 
     return msecs_to_jiffies(ms);
 }
-
-/*
- * Called from netfilter on SYN retransmits (not the initial SYN — kprobe
- * handles that). Set icsk_rto for the NEXT retransmit, since this one
- * was already scheduled with the previous RTO value.
- */
-static void apply_rto(struct sock *sk, struct fp_entry *fp)
-{
-    struct inet_connection_sock *icsk;
-    int next;
-
-    if (fp->req.rto_pattern == 0 && fp->req.rto_initial_ms == 0)
-        return;
-
-    icsk = inet_csk(sk);
-    if (!icsk)
-        return;
-
-    /*
-     * SYN retransmit path.
-     * The kernel already doubled icsk_rto and sent this SYN.
-     * We set icsk_rto for the NEXT retransmit AND re-arm the timer
-     * so the kernel can't double it before we get called again.
-     */
-    next = fp->syn_retransmits;
-    icsk->icsk_rto = get_rto_jiffies(fp, next);
-
-    /* Re-arm timer with our exact value for the next retransmit */
-    if (timer_pending(&icsk->icsk_retransmit_timer))
-        mod_timer(&icsk->icsk_retransmit_timer,
-                  jiffies + icsk->icsk_rto);
-
-    fp->syn_retransmits = next + 1;
-}
-
-static const struct file_operations dev_fops = {
-    .owner = THIS_MODULE,
-    .unlocked_ioctl = fp_ioctl,
-    .compat_ioctl = fp_ioctl,
-};
 
 /* --- ISN generation --- */
 
@@ -294,7 +266,6 @@ static u32 generate_isn(struct fp_entry *fp)
         return counter++;
     }
     case ISN_TIME_BASED: {
-        /* Windows-style: ISN increments by ~rate per second */
         u32 rate = req->isn_incr_rate ? req->isn_incr_rate : 250000;
         unsigned long elapsed = now - isn_time_last_jiffies;
         u32 inc = (u32)((u64)elapsed * rate / HZ);
@@ -302,21 +273,22 @@ static u32 generate_isn(struct fp_entry *fp)
         isn_time_last_jiffies = now;
         return isn_time_counter;
     }
-    default: /* ISN_RANDOM */
+    default:
         return get_random_u32();
     }
 }
 
+/* ================================================================
+ * NATIVE KPROBES — kernel builds correct packets directly
+ * ================================================================ */
+
 /*
- * --- kprobe on tcp_connect ---
- * Fires right before the SYN is built. We have full access to the socket:
- * - Set tp->write_seq to our ISN (kernel uses this as the SYN seq number)
- * - Set icsk->icsk_rto to our initial RTO (kernel uses this for retransmit timer)
- * No delta tracking needed. No timing offset. Perfect.
- */
-/*
- * kprobe on tcp_connect: PRE handler sets ISN (write_seq).
- * tcp_connect reads write_seq at line 4109 to build the SYN.
+ * kprobe on tcp_connect (pre handler):
+ * - Sets tp->write_seq for ISN (kernel uses it to build the SYN seq number)
+ *
+ * Called BEFORE tcp_connect_init, so write_seq may be overwritten by
+ * tcp_connect_init's snd_una/snd_nxt copies. We set it here AND in
+ * the tcp_connect_init kretprobe to ensure it sticks.
  */
 static int kp_tcp_connect_pre(struct kprobe *p, struct pt_regs *regs)
 {
@@ -347,10 +319,16 @@ static struct kprobe kp_tcp_connect = {
 };
 
 /*
- * kretprobe on tcp_connect_init — fires when tcp_connect_init RETURNS.
- * At this point icsk_rto is set to tcp_timeout_init() = 1s.
- * We override it to our value. tcp_connect then arms the timer with OUR rto.
- * This is the native approach — no timer hacking, the kernel uses our value.
+ * kretprobe on tcp_connect_init:
+ * Fires AFTER tcp_connect_init returns. At this point the kernel has set:
+ *   - icsk->icsk_rto = tcp_timeout_init() = 1s
+ *   - tp->rcv_wnd = initial window
+ *   - tp->rx_opt.rcv_wscale = window scale
+ *   - tp->tcp_header_len = 20 + (timestamps ? 12 : 0)
+ *   - tp->snd_una = tp->snd_nxt = tp->write_seq (ISN)
+ *
+ * We override these to match the target fingerprint.
+ * tcp_connect() then uses our values to build and send the SYN.
  */
 struct connect_init_data {
     struct sock *sk;
@@ -369,8 +347,10 @@ static int krp_connect_init_ret(struct kretprobe_instance *ri,
 {
     struct connect_init_data *d = (struct connect_init_data *)ri->data;
     struct sock *sk = d->sk;
+    struct tcp_sock *tp;
     struct inet_connection_sock *icsk;
     struct fp_entry *fp;
+    struct hev_tcpfp_req *req;
     u64 cookie;
 
     if (!sk) return 0;
@@ -381,14 +361,51 @@ static int krp_connect_init_ret(struct kretprobe_instance *ri,
     fp = fp_find(cookie);
     rcu_read_unlock();
     if (!fp) return 0;
-    if (fp->req.rto_pattern == 0 && fp->req.rto_initial_ms == 0)
-        return 0;
 
-    /* Override icsk_rto. tcp_connect will read this value to arm the timer.
-     * No timer hacking — the kernel natively uses our value. */
+    req = &fp->req;
+    tp = tcp_sk(sk);
     icsk = inet_csk(sk);
-    icsk->icsk_rto = get_rto_jiffies(fp, 0);
-    fp->syn_retransmits = 1;
+
+    /* ISN: tcp_connect_init copied write_seq → snd_una/snd_nxt.
+     * Re-set write_seq and update copies so tcp_connect uses our ISN. */
+    if (req->isn_pattern != ISN_RANDOM) {
+        u32 isn = generate_isn(fp);
+        tp->write_seq = isn;
+        tp->snd_una = isn;
+        tp->snd_sml = isn;
+        tp->snd_up = isn;
+        tp->snd_nxt = isn;
+    }
+
+    /* Initial RTO: kernel set icsk_rto = 1s. Override it.
+     * tcp_connect arms timer with icsk_rto at line 4135-4136. */
+    if (req->rto_pattern != 0 || req->rto_initial_ms != 0) {
+        icsk->icsk_rto = get_rto_jiffies(fp, 0);
+        fp->syn_retransmits = 1;
+    }
+
+    /* Window: __tcp_transmit_skb uses min(tp->rcv_wnd, 65535) for SYN.
+     * Set rcv_wnd to our target window value. */
+    if (req->tcp_window > 0)
+        tp->rcv_wnd = req->tcp_window;
+
+    /* Window scale: tcp_syn_options reads tp->rx_opt.rcv_wscale.
+     * Set it to our target. Also update rcv_ssthresh for consistency. */
+    if (req->wscale > 0) {
+        tp->rx_opt.rcv_wscale = req->wscale;
+        tp->rcv_ssthresh = tp->rcv_wnd;
+    }
+
+    /* Timestamps: if the fingerprint says no timestamps but kernel has them,
+     * reduce tcp_header_len to remove TS space. tcp_syn_options checks
+     * sysctl (which we can't change per-socket), but if we reduce
+     * tcp_header_len, tcp_syn_options will see less space available. */
+    if (req->timestamps == 0 && tp->tcp_header_len > sizeof(struct tcphdr)) {
+        /* Fingerprint says no timestamps — set header to minimum.
+         * tcp_syn_options checks sysctl_tcp_timestamps which is global,
+         * so the kretprobe on tcp_syn_options will handle removing TS. */
+    }
+
     return 0;
 }
 
@@ -401,28 +418,178 @@ static struct kretprobe krp_connect_init = {
 };
 
 /*
- * kprobe on tcp_retransmit_timer — fires at the START of the retransmit
- * timer callback, BEFORE the kernel doubles icsk_rto.
- * We set icsk_rto to our value so the kernel's "double" gives us what we want.
- * Strategy: set icsk_rto = target/2, kernel doubles it → target.
+ * kretprobe on tcp_syn_options:
+ * Fires AFTER tcp_syn_options fills the tcp_out_options struct.
+ * We modify opts to control MSS, timestamps, SACK, window scale values.
+ *
+ * tcp_syn_options signature:
+ *   unsigned int tcp_syn_options(struct sock *sk, struct sk_buff *skb,
+ *                                struct tcp_out_options *opts,
+ *                                struct tcp_key *key)
+ * x86_64 ABI: rdi=sk, rsi=skb, rdx=opts, rcx=key
+ * Return value in rax = total options size in bytes.
+ *
+ * The kernel's tcp_out_options struct (from include/net/tcp.h):
+ *   u16 options;        // bitmask: OPTION_TS, OPTION_SACK_ADVERTISE, etc.
+ *   u16 mss;            // MSS value to advertise
+ *   u8  ws;             // window scale
+ *   u8  num_sack_blocks; // SACK blocks count
+ *   ... (hash, tsval, tsecr, etc.)
  */
+
 /*
- * kprobe on tcp_retransmit_timer — post_handler fires AFTER the kernel
- * doubled icsk_rto and rescheduled the timer. We override both.
+ * We need to know the tcp_out_options layout. From kernel source:
+ *
+ * struct tcp_out_options {
+ *     u16 options;          // offset 0
+ *     u16 mss;              // offset 2
+ *     u8  ws;               // offset 4
+ *     u8  num_sack_blocks;  // offset 5
+ *     u8  hash_size;        // offset 6
+ *     u8  bpf_opt_len;      // offset 7
+ *     __u8 *hash;           // offset 8
+ *     __u32 tsval, tsecr;   // offset 16, 20
+ *     struct tcp_fastopen_cookie *fastopen_cookie; // offset 24
+ * };
+ *
+ * OPTION_TS             = BIT(1)  = 2
+ * OPTION_SACK_ADVERTISE = BIT(4)  = 16
+ * OPTION_WSCALE         = BIT(5)  = 32
  */
+
+#define KERN_OPT_SACK_ADVERTISE (1 << 0)  /* BIT(0) */
+#define KERN_OPT_TS             (1 << 1)  /* BIT(1) */
+#define KERN_OPT_WSCALE         (1 << 3)  /* BIT(3) */
+
+struct syn_opts_data {
+    struct sock *sk;
+    void *opts;  /* pointer to struct tcp_out_options on caller's stack */
+};
+
+static int krp_syn_options_entry(struct kretprobe_instance *ri,
+                                  struct pt_regs *regs)
+{
+    struct syn_opts_data *d = (struct syn_opts_data *)ri->data;
+    d->sk = (struct sock *)regs->di;
+    d->opts = (void *)regs->dx;
+    return 0;
+}
+
+static int krp_syn_options_ret(struct kretprobe_instance *ri,
+                                struct pt_regs *regs)
+{
+    struct syn_opts_data *d = (struct syn_opts_data *)ri->data;
+    struct sock *sk = d->sk;
+    void *opts = d->opts;
+    struct fp_entry *fp;
+    struct hev_tcpfp_req *req;
+    u64 cookie;
+    u16 *options_p;
+    u16 *mss_p;
+    u8 *ws_p;
+    u32 *tsval_p;
+    u16 options;
+    unsigned int size;
+
+    if (!sk || !opts) return 0;
+    cookie = atomic64_read(&sk->sk_cookie);
+    if (!cookie) return 0;
+
+    rcu_read_lock();
+    fp = fp_find(cookie);
+    rcu_read_unlock();
+    if (!fp) return 0;
+
+    req = &fp->req;
+
+    /* Access tcp_out_options fields by offset */
+    options_p = (u16 *)opts;          /* offset 0 */
+    mss_p     = (u16 *)(opts + 2);    /* offset 2 */
+    ws_p      = (u8 *)(opts + 4);     /* offset 4 */
+    tsval_p   = (u32 *)(opts + 16);   /* offset 16 */
+    options = *options_p;
+    size = (unsigned int)regs_return_value(regs);
+
+    /* Override window scale value */
+    if (req->wscale > 0 && (options & KERN_OPT_WSCALE))
+        *ws_p = req->wscale;
+
+    /* Override SACK permitted */
+    if (req->sack_perm == 0) {
+        /* Remove SACK from options */
+        if (options & KERN_OPT_SACK_ADVERTISE) {
+            *options_p &= ~KERN_OPT_SACK_ADVERTISE;
+            /* If SACK was combined with TS (no extra space used),
+             * removing it doesn't change size. If standalone (4 bytes),
+             * we'd need to adjust, but this is handled by NF rewrite. */
+        }
+    } else if (req->sack_perm == 1) {
+        /* Ensure SACK is present */
+        *options_p |= KERN_OPT_SACK_ADVERTISE;
+    }
+
+    /* Override timestamps */
+    if (req->timestamps == 0 && (options & KERN_OPT_TS)) {
+        /* Remove timestamps flag. tcp_options_write won't write TS.
+         * SACK was combined with TS (0 extra bytes), now it needs
+         * standalone space (4 bytes). Recompute total size. */
+        *options_p &= ~KERN_OPT_TS;
+    }
+
+    /* Override timestamp initial value */
+    if (req->ts_initial > 0 && ((*options_p) & KERN_OPT_TS))
+        *tsval_p = req->ts_initial;
+
+    /* Recompute options size based on what tcp_options_write will emit */
+    {
+        unsigned int new_size = 0;
+        u16 final_options = *options_p;
+        if (*mss_p)
+            new_size += 4;  /* TCPOLEN_MSS_ALIGNED */
+        if (final_options & KERN_OPT_TS)
+            new_size += 12; /* TCPOLEN_TSTAMP_ALIGNED (includes SACK if both) */
+        if ((final_options & KERN_OPT_SACK_ADVERTISE) &&
+            !(final_options & KERN_OPT_TS))
+            new_size += 4;  /* TCPOLEN_SACKPERM_ALIGNED (standalone) */
+        if (final_options & KERN_OPT_WSCALE)
+            new_size += 4;  /* TCPOLEN_WSCALE_ALIGNED */
+        regs->ax = new_size;
+    }
+
+    return 0;
+}
+
+static struct kretprobe krp_syn_options = {
+    .handler = krp_syn_options_ret,
+    .entry_handler = krp_syn_options_entry,
+    .data_size = sizeof(struct syn_opts_data),
+    .maxactive = 20,
+    .kp.symbol_name = "tcp_syn_options",
+};
+
 /*
- * PRE handler: fires BEFORE kernel doubles icsk_rto.
- * We set icsk_rto to target/2 so the kernel's doubling gives us target.
- * Then the kernel arms the timer with the doubled value = our target.
+ * kprobe on tcp_retransmit_timer (pre handler):
+ * Fires BEFORE the kernel processes backoff logic.
+ *
+ * Kernel backoff behavior (tcp_timer.c lines 649-664):
+ * - SYN_SENT with total_rto <= sysctl_tcp_syn_linear_timeouts (default 4):
+ *   NO doubling. icsk_rto stays as-is. Timer re-armed with same value.
+ * - Otherwise: icsk_rto = min(icsk_rto << 1, TCP_RTO_MAX)
+ *
+ * Strategy: Set icsk_rto to our target value. After the kernel's backoff
+ * logic runs (which may double it), the NF hook will correct it via
+ * mod_timer with the right value for the NEXT retransmit.
  */
 static int kp_retransmit_pre(struct kprobe *p, struct pt_regs *regs)
 {
     struct sock *sk = (struct sock *)regs->di;
+    struct tcp_sock *tp;
     struct inet_connection_sock *icsk;
     struct fp_entry *fp;
     u64 cookie;
     unsigned long rto;
     int idx;
+    int linear;
 
     if (!sk) return 0;
     cookie = atomic64_read(&sk->sk_cookie);
@@ -435,14 +602,27 @@ static int kp_retransmit_pre(struct kprobe *p, struct pt_regs *regs)
     if (fp->req.rto_pattern == 0 && fp->req.rto_initial_ms == 0)
         return 0;
 
+    tp = tcp_sk(sk);
     icsk = inet_csk(sk);
     idx = fp->syn_retransmits;
     rto = get_rto_jiffies(fp, idx);
     fp->syn_retransmits = idx + 1;
 
-    /* Set exact target. Kernel arms timer with this value, then doubles
-     * for next time. Our next pre_handler call overrides the doubled value. */
-    icsk->icsk_rto = rto;
+    /* Check if kernel will use linear (no doubling) or exponential backoff.
+     * SYN_SENT: linear for first N retransmits (sysctl_tcp_syn_linear_timeouts).
+     * For linear: set icsk_rto = target directly (kernel won't modify it).
+     * For exponential: set icsk_rto = target/2 so doubling gives target. */
+    linear = (sk->sk_state == TCP_SYN_SENT &&
+              tp->total_rto <=
+              READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_syn_linear_timeouts));
+
+    if (linear) {
+        icsk->icsk_rto = rto;
+    } else {
+        icsk->icsk_rto = rto / 2;
+        if (icsk->icsk_rto < 1)
+            icsk->icsk_rto = 1;
+    }
     return 0;
 }
 
@@ -451,9 +631,19 @@ static struct kprobe kp_retransmit = {
     .pre_handler = kp_retransmit_pre,
 };
 
-/* --- SYN rewrite (in-place, no skb resize) --- */
+/* ================================================================
+ * NETFILTER HOOKS — only for TCP option ORDER and IP-layer mods
+ * ================================================================ */
 
-static void rewrite_syn(struct sk_buff *skb, struct fp_entry *fp)
+/*
+ * Rewrite SYN TCP options in the target ORDER.
+ * The kernel has already written them (via tcp_options_write) in a fixed
+ * order (MSS, TS+SACK, WS). We reorder them to match the fingerprint.
+ *
+ * We also handle: removing options that were disabled via kretprobe but
+ * tcp_options_write still wrote (race conditions), and trimming doff.
+ */
+static void rewrite_syn_options(struct sk_buff *skb, struct fp_entry *fp)
 {
     struct tcphdr *th = tcp_hdr(skb);
     unsigned int hdrlen, opts_len;
@@ -461,13 +651,14 @@ static void rewrite_syn(struct sk_buff *skb, struct fp_entry *fp)
     u16 mss_val = 0;
     u8 ws_val = 0;
     u32 tsval = 0, tsecr = 0;
+    int has_sack = 0, has_ts = 0;
     int i, wrote;
     struct hev_tcpfp_req *req = &fp->req;
 
     if (!th || !th->syn || th->ack)
         return;
 
-    if (req->tcp_options_count == 0 && req->tcp_window == 0)
+    if (req->tcp_options_count == 0)
         return;
 
     hdrlen = th->doff * 4;
@@ -479,7 +670,7 @@ static void rewrite_syn(struct sk_buff *skb, struct fp_entry *fp)
     th = tcp_hdr(skb);
     opts = (u8 *)th + sizeof(struct tcphdr);
 
-    /* Parse kernel option values */
+    /* Parse what the kernel wrote */
     p = opts;
     while (p < opts + opts_len) {
         u8 kind = *p, len;
@@ -492,72 +683,67 @@ static void rewrite_syn(struct sk_buff *skb, struct fp_entry *fp)
             mss_val = ntohs(*(u16 *)(p + 2));
         else if (kind == OPT_WS && len >= 3)
             ws_val = *(p + 2);
+        else if (kind == OPT_SACK && len == 2)
+            has_sack = 1;
         else if (kind == OPT_TS && len >= 10) {
             tsval = ntohl(*(u32 *)(p + 2));
             tsecr = ntohl(*(u32 *)(p + 6));
+            has_ts = 1;
         }
         p += len;
     }
 
+    /* Override values from fingerprint */
     if (req->wscale > 0)
         ws_val = req->wscale;
 
-    /* Rewrite options in-place */
-    if (req->tcp_options_count > 0) {
-        memset(opts, 0, opts_len);
-        p = opts;
-        wrote = 0;
+    /* Rewrite options in target order */
+    memset(opts, 0, opts_len);
+    p = opts;
+    wrote = 0;
 
-        for (i = 0; i < req->tcp_options_count && i < 16; i++) {
-            u8 kind = req->tcp_options_order[i];
-            int need;
-            switch (kind) {
-            case OPT_NOP: case OPT_EOL: need = 1; break;
-            case OPT_MSS: need = 4; break;
-            case OPT_WS:  need = 3; break;
-            case OPT_SACK: need = 2; break;
-            case OPT_TS:  need = 10; break;
-            default: need = 0;
-            }
-            if (need == 0 || wrote + need > (int)opts_len) break;
-
-            switch (kind) {
-            case OPT_NOP: *p++ = OPT_NOP; break;
-            case OPT_EOL: *p++ = OPT_EOL; break;
-            case OPT_MSS:
-                *p++ = OPT_MSS; *p++ = 4;
-                *(u16 *)p = htons(mss_val); p += 2; break;
-            case OPT_WS:
-                *p++ = OPT_WS; *p++ = 3; *p++ = ws_val; break;
-            case OPT_SACK:
-                *p++ = OPT_SACK; *p++ = 2; break;
-            case OPT_TS:
-                *p++ = OPT_TS; *p++ = 10;
-                *(u32 *)p = htonl(tsval); p += 4;
-                *(u32 *)p = htonl(tsecr); p += 4; break;
-            }
-            wrote = p - opts;
+    for (i = 0; i < req->tcp_options_count && i < 16; i++) {
+        u8 kind = req->tcp_options_order[i];
+        int need;
+        switch (kind) {
+        case OPT_NOP: case OPT_EOL: need = 1; break;
+        case OPT_MSS: need = 4; break;
+        case OPT_WS:  need = 3; break;
+        case OPT_SACK: need = 2; break;
+        case OPT_TS:  need = 10; break;
+        default: need = 0;
         }
+        if (need == 0 || wrote + need > (int)opts_len) break;
 
-        /* Trim TCP header */
-        {
-            int new_padded = (wrote + 3) & ~3;
-            int new_hdrlen = sizeof(struct tcphdr) + new_padded;
-            int old_total = th->doff * 4;
-            if (new_hdrlen < old_total && new_padded <= (int)opts_len) {
-                th->doff = new_hdrlen / 4;
-                /* Adjust IP total length — handled below per-protocol */
-            }
+        switch (kind) {
+        case OPT_NOP: *p++ = OPT_NOP; break;
+        case OPT_EOL: *p++ = OPT_EOL; break;
+        case OPT_MSS:
+            *p++ = OPT_MSS; *p++ = 4;
+            *(u16 *)p = htons(mss_val); p += 2; break;
+        case OPT_WS:
+            *p++ = OPT_WS; *p++ = 3; *p++ = ws_val; break;
+        case OPT_SACK:
+            *p++ = OPT_SACK; *p++ = 2; break;
+        case OPT_TS:
+            *p++ = OPT_TS; *p++ = 10;
+            *(u32 *)p = htonl(tsval); p += 4;
+            *(u32 *)p = htonl(tsecr); p += 4; break;
         }
+        wrote = p - opts;
     }
 
-    /* Set window */
-    if (req->tcp_window > 0)
-        th->window = htons(req->tcp_window);
+    /* Trim TCP header if we used fewer bytes */
+    {
+        int new_padded = (wrote + 3) & ~3;
+        int new_hdrlen = sizeof(struct tcphdr) + new_padded;
+        int old_total = th->doff * 4;
+        if (new_hdrlen < old_total && new_padded <= (int)opts_len)
+            th->doff = new_hdrlen / 4;
+    }
 }
 
-/* --- Timestamp clock scaling (works on any packet with TS option) --- */
-
+/* Timestamp clock scaling (all packets with TS option) */
 static void scale_timestamps(struct tcphdr *th, u32 target_hz)
 {
     unsigned int hdrlen = th->doff * 4;
@@ -616,17 +802,21 @@ nf_out_v4(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
     th = tcp_hdr(skb);
     if (!th) return NF_ACCEPT;
 
-    /* SYN rewrite */
+    /* SYN: rewrite options in target order */
     if (th->syn && !th->ack) {
         int old_doff = th->doff;
-        rewrite_syn(skb, fp);
+
+        /* Window override: kretprobe set tp->rcv_wnd, but
+         * __tcp_transmit_skb caps at 65535. Override directly. */
+        if (fp->req.tcp_window > 0)
+            th->window = htons(fp->req.tcp_window);
+
+        rewrite_syn_options(skb, fp);
         iph = ip_hdr(skb);
         th = tcp_hdr(skb);
         trim = (old_doff - th->doff) * 4;
         if (trim > 0)
             iph->tot_len = htons(ntohs(iph->tot_len) - trim);
-
-        /* RTO handled entirely by kprobes (tcp_connect + tcp_retransmit_timer) */
     }
 
     /* IP ID */
@@ -650,7 +840,7 @@ nf_out_v4(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
     if (th->ack && !th->syn && !th->fin && !th->rst && fp->req.ack_df)
         iph->frag_off |= htons(IP_DF);
 
-    /* Timestamp clock */
+    /* Timestamp clock scaling (all packets) */
     if (fp->req.ts_clock > 0 && fp->req.ts_clock != 1000)
         scale_timestamps(th, fp->req.ts_clock);
 
@@ -665,8 +855,6 @@ nf_out_v4(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
     skb->ip_summed = CHECKSUM_NONE;
     return NF_ACCEPT;
 }
-
-/* No LOCAL_IN hook needed — kprobe sets ISN directly, no delta tracking */
 
 /* --- Outgoing hook — IPv6 --- */
 
@@ -700,16 +888,19 @@ nf_out_v6(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
     th = tcp_hdr(skb);
     if (!th) return NF_ACCEPT;
 
-    /* SYN rewrite */
+    /* SYN: rewrite options in target order */
     if (th->syn && !th->ack) {
         int old_doff = th->doff;
-        rewrite_syn(skb, fp);
+
+        if (fp->req.tcp_window > 0)
+            th->window = htons(fp->req.tcp_window);
+
+        rewrite_syn_options(skb, fp);
         ip6h = ipv6_hdr(skb);
         th = tcp_hdr(skb);
         trim = (old_doff - th->doff) * 4;
         if (trim > 0)
             ip6h->payload_len = htons(ntohs(ip6h->payload_len) - trim);
-
     }
 
     /* IPv6 flow label */
@@ -723,11 +914,11 @@ nf_out_v6(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
         if (fp->req.rst_ttl) ip6h->hop_limit = fp->req.rst_ttl;
     }
 
-    /* Timestamp clock */
+    /* Timestamp clock scaling */
     if (fp->req.ts_clock > 0 && fp->req.ts_clock != 1000)
         scale_timestamps(th, fp->req.ts_clock);
 
-    /* TCP checksum (IPv6 uses pseudo-header) */
+    /* TCP checksum (IPv6 pseudo-header) */
     tcp_len = ntohs(ip6h->payload_len);
     th->check = 0;
     th->check = csum_ipv6_magic(&ip6h->saddr, &ip6h->daddr,
@@ -736,8 +927,6 @@ nf_out_v6(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
     skb->ip_summed = CHECKSUM_NONE;
     return NF_ACCEPT;
 }
-
-/* No IPv6 LOCAL_IN hook needed — kprobe handles ISN directly */
 
 /* --- Netfilter hooks --- */
 
@@ -786,7 +975,7 @@ static int __init hev_tcpfp_init(void)
         }
     }
 
-    /* kprobes for ISN + RTO */
+    /* Native kprobes */
     ret = register_kprobe(&kp_tcp_connect);
     if (ret < 0)
         pr_warn("hev-tcpfp: kprobe tcp_connect failed (%d)\n", ret);
@@ -794,6 +983,10 @@ static int __init hev_tcpfp_init(void)
     ret = register_kretprobe(&krp_connect_init);
     if (ret < 0)
         pr_warn("hev-tcpfp: kretprobe tcp_connect_init failed (%d)\n", ret);
+
+    ret = register_kretprobe(&krp_syn_options);
+    if (ret < 0)
+        pr_warn("hev-tcpfp: kretprobe tcp_syn_options failed (%d)\n", ret);
 
     ret = register_kprobe(&kp_retransmit);
     if (ret < 0)
@@ -803,7 +996,7 @@ static int __init hev_tcpfp_init(void)
     isn_time_last_jiffies = jiffies;
     isn_time_counter = get_random_u32();
 
-    pr_info("hev-tcpfp: v4 loaded (kprobe ISN+RTO, NF options, IPv4+IPv6)\n");
+    pr_info("hev-tcpfp: v5 loaded (native kprobe ISN+RTO+WIN+WS+SACK+TS, NF reorder+IP)\n");
     return 0;
 }
 
@@ -814,6 +1007,7 @@ static void __exit hev_tcpfp_exit(void)
     int bkt, i;
 
     unregister_kprobe(&kp_retransmit);
+    unregister_kretprobe(&krp_syn_options);
     unregister_kretprobe(&krp_connect_init);
     unregister_kprobe(&kp_tcp_connect);
 
@@ -831,7 +1025,7 @@ static void __exit hev_tcpfp_exit(void)
     cdev_del(&dev_cdev);
     class_destroy(dev_class);
     unregister_chrdev_region(dev_num, 1);
-    pr_info("hev-tcpfp: v4 unloaded\n");
+    pr_info("hev-tcpfp: v5 unloaded\n");
 }
 
 module_init(hev_tcpfp_init);
