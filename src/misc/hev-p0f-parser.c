@@ -395,6 +395,162 @@ parse_p0f_fields (char *buf)
     return fp;
 }
 
+/* ---- JA4T parser ---- */
+
+/*
+ * JA4T format: window_options_mss_wscale[_rto]
+ *
+ * Fields separated by '_':
+ *   a: TCP window size (e.g. 65535)
+ *   b: TCP options as hyphen-separated kind numbers (e.g. 2-1-3-1-1-4)
+ *   c: MSS value (e.g. 1460)
+ *   d: Window scale (e.g. 8)
+ *   e: (optional) RTO timings in seconds (e.g. 1-2-4-8 or 1-2-4-8-R6)
+ *
+ * Option kind numbers: 0=EOL 1=NOP 2=MSS 3=WS 4=SACK 8=TS
+ */
+static HevFingerprint *
+parse_ja4t (char *buf)
+{
+    HevFingerprint *fp;
+    char *fields[5] = { 0 };
+    char *p, *save;
+    int n = 0;
+
+    for (p = buf; n < 5 && (fields[n] = strtok_r (p, "_", &save)) != NULL;
+         p = NULL)
+        n++;
+
+    if (n < 4)
+        return NULL;
+
+    fp = calloc (1, sizeof (HevFingerprint));
+    if (!fp)
+        return NULL;
+
+    /* Field a: window size */
+    fp->window = atoi (fields[0]);
+    fp->flags |= HEV_FP_FLAG_WINDOW;
+
+    /* Field b: TCP options (hyphen-separated kind numbers) */
+    {
+        char optbuf[128];
+        char *op, *osave;
+        int oc = 0;
+        strncpy (optbuf, fields[1], sizeof (optbuf) - 1);
+        optbuf[sizeof (optbuf) - 1] = '\0';
+        for (op = optbuf;
+             oc < HEV_FP_MAX_TCP_OPTIONS &&
+             (p = strtok_r (op, "-", &osave)) != NULL;
+             op = NULL) {
+            int kind = atoi (p);
+            fp->tcp_options_order[oc++] = kind;
+            /* Derive flags from presence */
+            switch (kind) {
+            case HEV_TCP_OPT_WSCALE:
+                fp->flags |= HEV_FP_FLAG_WSCALE;
+                break;
+            case HEV_TCP_OPT_SACK_PERM:
+                fp->sack_perm = 1;
+                fp->flags |= HEV_FP_FLAG_SACK_PERM;
+                break;
+            case HEV_TCP_OPT_TIMESTAMPS:
+                fp->timestamps = 1;
+                fp->flags |= HEV_FP_FLAG_TIMESTAMPS;
+                break;
+            }
+        }
+        fp->tcp_options_count = oc;
+        fp->flags |= HEV_FP_FLAG_TCP_OPTS;
+    }
+
+    /* Field c: MSS */
+    fp->mss = atoi (fields[2]);
+    fp->flags |= HEV_FP_FLAG_MSS;
+
+    /* Field d: window scale */
+    fp->wscale = atoi (fields[3]);
+    fp->flags |= HEV_FP_FLAG_WSCALE;
+
+    /* Default TTL: guess from window size (Windows=128, else 64) */
+    if (fp->window == 65535 && !fp->timestamps) {
+        fp->ttl = 128; /* Windows-like */
+        fp->df = 1;
+        fp->ip_id_behavior = HEV_FP_IPID_RANDOM;
+        fp->flags |= HEV_FP_FLAG_IP_ID;
+    } else {
+        fp->ttl = 64; /* Unix-like */
+        fp->df = 1;
+    }
+    fp->flags |= HEV_FP_FLAG_TTL | HEV_FP_FLAG_DF;
+
+    /* Field e: RTO timings (optional) */
+    if (n >= 5 && fields[4] && fields[4][0]) {
+        char rtobuf[128];
+        char *rp, *rtok, *rsave;
+        int rc = 0;
+        strncpy (rtobuf, fields[4], sizeof (rtobuf) - 1);
+        rtobuf[sizeof (rtobuf) - 1] = '\0';
+
+        /* Check for R<count> suffix (e.g. "1-2-4-8-R6") */
+        char *rflag = strrchr (rtobuf, 'R');
+        if (rflag) {
+            fp->retransmit_count = atoi (rflag + 1);
+            fp->flags2 |= HEV_FP_FLAG2_RETRANSMIT;
+            *rflag = '\0'; /* trim R suffix */
+            /* Remove trailing '-' if present */
+            int rlen = strlen (rtobuf);
+            if (rlen > 0 && rtobuf[rlen - 1] == '-')
+                rtobuf[rlen - 1] = '\0';
+        }
+
+        fp->rto_pattern = HEV_FP_RTO_CUSTOM;
+        for (rp = rtobuf;
+             rc < 16 && (rtok = strtok_r (rp, "-", &rsave)) != NULL;
+             rp = NULL) {
+            /* JA4T uses seconds, convert to ms */
+            fp->rto_values[rc++] = atoi (rtok) * 1000;
+        }
+        fp->rto_count = rc;
+        if (rc > 0)
+            fp->rto_initial_ms = fp->rto_values[0];
+        fp->flags2 |= HEV_FP_FLAG2_RTO;
+    }
+
+    LOG_D ("ja4t: parsed WIN=%d MSS=%d WS=%d opts=%d rto_count=%d",
+           fp->window, fp->mss, fp->wscale, fp->tcp_options_count,
+           fp->rto_count);
+
+    return fp;
+}
+
+/*
+ * Detect format: JA4T uses '_' separator, p0f uses ':' or '.'
+ */
+static int
+is_ja4t_format (const char *sig)
+{
+    /* JA4T starts with a number (window size) and contains '_' */
+    if (!sig || !sig[0])
+        return 0;
+    if (sig[0] < '0' || sig[0] > '9')
+        return 0;
+    if (!strchr (sig, '_'))
+        return 0;
+    /* p0f starts with version (4 or 6) then ':' or '.'
+     * JA4T window sizes are > 6, so if first field > 9 it's JA4T */
+    char first[16];
+    const char *us = strchr (sig, '_');
+    int flen = us - sig;
+    if (flen <= 0 || flen > 15)
+        return 0;
+    memcpy (first, sig, flen);
+    first[flen] = '\0';
+    int val = atoi (first);
+    /* p0f version is 4 or 6. JA4T window is typically > 100 */
+    return val > 6;
+}
+
 /* ---- Public API ---- */
 
 HevFingerprint *
@@ -407,6 +563,9 @@ hev_p0f_parse (const char *sig)
 
     strncpy (buf, sig, sizeof (buf) - 1);
     buf[sizeof (buf) - 1] = '\0';
+
+    if (is_ja4t_format (buf))
+        return parse_ja4t (buf);
 
     return parse_p0f_fields (buf);
 }
@@ -430,29 +589,32 @@ hev_p0f_parse_username (const char *username, unsigned int len)
     const char *p;
     int dots = 0;
 
-    if (!username || len < 10 || len > 250)
+    if (!username || len < 5 || len > 250)
         return NULL;
 
-    /* Must start with IP version: "4." or "6." or "*." */
+    if (len >= sizeof (buf))
+        return NULL;
+
+    memcpy (buf, username, len);
+    buf[len] = '\0';
+
+    /* Try JA4T format first (starts with digits, has '_') */
+    if (is_ja4t_format (buf))
+        return parse_ja4t (buf);
+
+    /* p0f format: must start with "4." or "6." or "*." */
     if (username[1] != '.')
         return NULL;
     if (username[0] != '4' && username[0] != '6' && username[0] != '*')
         return NULL;
 
-    /* Count dots before '~' — need exactly 7 for 8 fields */
+    /* Count dots before '~' - need exactly 7 for 8 fields */
     for (p = username; p < username + len && *p != '~'; p++) {
         if (*p == '.')
             dots++;
     }
     if (dots != 7)
         return NULL;
-
-    /* Looks like an encoded fingerprint — parse it */
-    if (len >= sizeof (buf))
-        return NULL;
-
-    memcpy (buf, username, len);
-    buf[len] = '\0';
 
     return parse_p0f_fields (buf);
 }

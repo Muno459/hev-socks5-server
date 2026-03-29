@@ -86,6 +86,10 @@ The kernel module uses **ftrace function redirection** and **kprobe struct injec
 | IP TTL | `setsockopt(IP_TTL)` | Socket-wide |
 | IP ID | Netfilter (IP-layer) | Per-packet |
 
+### Supported signature formats
+
+SkyProxy accepts both **p0f v3** and **JA4T** fingerprint formats. Auto-detected based on input.
+
 ### p0f signature format
 
 ```
@@ -120,6 +124,37 @@ Append `~` after the p0f signature for active fingerprinting parameters:
 | `ecn=` | `1` (enable), `0` (disable) | ECN negotiation (ECE+CWR on SYN) |
 | `strip=` | `10` (strip after N retransmits) | Option stripping on final SYN retransmit |
 
+### JA4T signature format
+
+```
+window_options_mss_wscale[_rto]
+```
+
+| Field | Description | Example |
+|-------|-------------|---------|
+| `window` | TCP window size | `65535` |
+| `options` | TCP options as hyphen-separated kind numbers | `2-1-3-1-1-4` |
+| `mss` | Maximum segment size | `1460` |
+| `wscale` | Window scale factor | `8` |
+| `rto` | (optional) Retransmission timings in seconds, R-prefixed retry count | `1-2-4-8-R6` |
+
+TCP option kind numbers: 0=EOL, 1=NOP, 2=MSS, 3=WS, 4=SACK, 8=TS
+
+Examples:
+
+```
+# Windows 11
+65535_2-1-3-1-1-4_1460_8_1-2-4-8
+
+# Linux
+29200_2-4-8-1-3_1460_7_1-1-1-1-1-2-4-8-16-32
+
+# macOS
+65535_2-1-3-1-1-8-4-0_1460_6
+```
+
+JA4T signatures can be used anywhere p0f signatures are accepted: in auth.json `"p0f"` field, or in dynamic password encoding.
+
 ### Dynamic fingerprinting via password
 
 Set a wildcard user with `(*)` in the password:
@@ -130,12 +165,14 @@ Set a wildcard user with `(*)` in the password:
 ]
 ```
 
-The client encodes the p0f signature in the password:
+The client encodes a p0f or JA4T signature in the password:
 
 ```bash
-# Password format: secret(<p0f signature>)
-# Dots (.) replace colons (:) in the password encoding
+# p0f format (dots replace colons in password encoding)
 curl -x socks5h://fp:secret(4.128.0.1460.65535,8.mss,nop,ws,nop,nop,sok.df,id+.0)@server:1080 http://target
+
+# JA4T format (no encoding needed, underscores are fine in passwords)
+curl -x socks5h://fp:secret(65535_2-1-3-1-1-4_1460_8_1-2-4-8)@server:1080 http://target
 ```
 
 ### Verified OS profiles

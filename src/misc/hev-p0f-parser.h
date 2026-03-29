@@ -15,14 +15,14 @@ extern "C" {
 #endif
 
 /*
- * Parse a p0f v3 SYN signature string into a HevFingerprint struct.
+ * Parse a p0f v3 or JA4T signature string into a HevFingerprint struct.
+ * Auto-detects the format.
  *
- * Format: ver:ittl:olen:mss:wsize,scale:olayout:quirks:pclass
- *
- * Examples:
+ * p0f format: ver:ittl:olen:mss:wsize,scale:olayout:quirks:pclass
  *   "4:128:0:1460:65535,8:mss,nop,ws,nop,nop,sok:df,id+:0"
- *   "4:64:0:*:mss*20,7:mss,sok,ts,nop,ws:df,id+:0"
- *   "*:64:0:1460:mss*10,6:mss,nop,ws,nop,nop,ts,sok,eol+1:df:0"
+ *
+ * JA4T format: window_options_mss_wscale_rto
+ *   "65535_2-1-3-1-1-4_1460_8_1-2-4-8"
  *
  * Returns heap-allocated HevFingerprint on success, NULL on parse error.
  */
