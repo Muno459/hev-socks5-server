@@ -53,7 +53,7 @@
 #include <net/inet_connection_sock.h>
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("hev-socks5-server");
+MODULE_AUTHOR("Muno459 (SkyProxy)");
 MODULE_DESCRIPTION("TCP/IP fingerprint spoofing v7 (ftrace function redirect + kprobes)");
 MODULE_VERSION("7.0");
 

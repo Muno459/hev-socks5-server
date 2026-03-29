@@ -1,4 +1,4 @@
-# Main configuration for hev-socks5-server
+# Main configuration for SkyProxy
 
 main:
   # Worker threads
@@ -54,6 +54,6 @@ auth:
   # debug, info, warn or error
 # log-level: warn
   # If present, run as a daemon with this pid file
-# pid-file: /run/hev-socks5-server.pid
+# pid-file: /run/skyproxy.pid
   # If present, set rlimit nofile; else use default value
 # limit-nofile: 65535

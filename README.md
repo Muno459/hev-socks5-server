@@ -44,14 +44,14 @@
 
 ```bash
 git clone --recursive https://github.com/Muno459/skyproxy
-cd hev-socks5-server
+cd skyproxy
 make          # builds binary + kernel module + loads it
 ```
 
 Edit `conf/auth.json` with your fingerprint profiles, then:
 
 ```bash
-./bin/hev-socks5-server conf/main.yml
+./bin/skyproxy conf/main.yml
 ```
 
 Connect through the proxy:
@@ -170,7 +170,7 @@ misc:
   connect-timeout: 30000
   # log-file: stderr
   # log-level: warn
-  # pid-file: /run/hev-socks5-server.pid
+  # pid-file: /run/skyproxy.pid
   # limit-nofile: 65535
 ```
 
@@ -220,7 +220,7 @@ The JSON format supports all plaintext fields plus:
 Reload auth without restarting:
 
 ```bash
-killall -SIGUSR1 hev-socks5-server
+killall -SIGUSR1 skyproxy
 ```
 
 ## Build Options

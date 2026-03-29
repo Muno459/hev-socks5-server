@@ -2,7 +2,7 @@
 # Test TCP/IP fingerprint spoofing for each user profile
 set -e
 
-SERVER=./bin/hev-socks5-server
+SERVER=./bin/skyproxy
 CONF=./conf/test.yml
 PORT=1080
 LISTEN_PORT=9999

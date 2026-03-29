@@ -1,6 +1,6 @@
-# Makefile for hev-socks5-server
+# Makefile for SkyProxy
 
-PROJECT=hev-socks5-server
+PROJECT=skyproxy
 
 CROSS_PREFIX :=
 PP=$(CROSS_PREFIX)cpp
@@ -23,7 +23,7 @@ INSTDIR=/usr/local
 THIRDPARTDIR=third-part
 
 CONFIG=$(CONFDIR)/main.yml
-EXEC_TARGET=$(BINDIR)/hev-socks5-server
+EXEC_TARGET=$(BINDIR)/skyproxy
 STATIC_TARGET=$(BINDIR)/lib$(PROJECT).a
 SHARED_TARGET=$(BINDIR)/lib$(PROJECT).so
 THIRDPARTS=$(THIRDPARTDIR)/yaml $(THIRDPARTDIR)/hev-task-system
@@ -79,13 +79,13 @@ endif
 # Default target — builds binary + kernel module + loads module
 all : exec dkms kmod-load
 	@echo ""
-	@echo "  \e[1;32mReady!\e[0m Run: ./bin/hev-socks5-server conf/main.yml"
+	@echo "  \e[1;32mReady!\e[0m Run: ./bin/skyproxy conf/main.yml"
 	@echo ""
 
 # Full setup with system install
 setup : all install
 	@echo ""
-	@echo "  \e[1;32mInstalled!\e[0m Run: hev-socks5-server /usr/local/etc/hev-socks5-server.yml"
+	@echo "  \e[1;32mInstalled!\e[0m Run: skyproxy /usr/local/etc/skyproxy.yml"
 	@echo ""
 
 exec : $(EXEC_TARGET)
