@@ -1,3 +1,9 @@
 bin
 build
 HevSocks5Server.xcframework
+src/dkms/*.o
+src/dkms/*.ko
+src/dkms/*.mod*
+src/dkms/.*.cmd
+src/dkms/Module.symvers
+src/dkms/modules.order

@@ -26,6 +26,8 @@
 #include "hev-socks5-worker.h"
 #include "hev-socket-factory.h"
 #include "hev-socks5-user-mark.h"
+#include "hev-fingerprint.h"
+#include "hev-p0f-parser.h"
 
 #include "hev-socks5-proxy.h"
 
@@ -36,6 +38,378 @@ static HevTask *task;
 static pthread_t *work_threads;
 static HevSocketFactory *factory;
 static HevSocks5Worker **worker_list;
+
+static int
+hev_socks5_proxy_parse_bool (const char *val)
+{
+    return (0 == strcmp (val, "true") || 0 == strcmp (val, "1") ||
+            0 == strcmp (val, "yes"));
+}
+
+static HevFingerprint *
+hev_socks5_proxy_parse_fingerprint (yaml_document_t *doc, yaml_node_t *node)
+{
+    HevFingerprint *fp;
+    yaml_node_pair_t *pair;
+
+    if (!node || node->type != YAML_MAPPING_NODE)
+        return NULL;
+
+    fp = calloc (1, sizeof (HevFingerprint));
+    if (!fp)
+        return NULL;
+
+    for (pair = node->data.mapping.pairs.start;
+         pair < node->data.mapping.pairs.top; pair++) {
+        yaml_node_t *k = yaml_document_get_node (doc, pair->key);
+        yaml_node_t *v = yaml_document_get_node (doc, pair->value);
+        const char *key;
+        const char *val;
+
+        if (!k || k->type != YAML_SCALAR_NODE)
+            continue;
+
+        key = (const char *)k->data.scalar.value;
+
+        /* tcp_options_order is a sequence */
+        if (v && v->type == YAML_SEQUENCE_NODE &&
+            0 == strcmp (key, "tcp_options_order")) {
+            yaml_node_item_t *item;
+            int count = 0;
+
+            for (item = v->data.sequence.items.start;
+                 item < v->data.sequence.items.top &&
+                 count < HEV_FP_MAX_TCP_OPTIONS;
+                 item++) {
+                yaml_node_t *n = yaml_document_get_node (doc, *item);
+                const char *opt;
+
+                if (!n || n->type != YAML_SCALAR_NODE)
+                    continue;
+
+                opt = (const char *)n->data.scalar.value;
+                if (0 == strcmp (opt, "mss"))
+                    fp->tcp_options_order[count++] = HEV_TCP_OPT_MSS;
+                else if (0 == strcmp (opt, "wscale"))
+                    fp->tcp_options_order[count++] = HEV_TCP_OPT_WSCALE;
+                else if (0 == strcmp (opt, "sack_perm"))
+                    fp->tcp_options_order[count++] = HEV_TCP_OPT_SACK_PERM;
+                else if (0 == strcmp (opt, "timestamps"))
+                    fp->tcp_options_order[count++] = HEV_TCP_OPT_TIMESTAMPS;
+                else if (0 == strcmp (opt, "nop"))
+                    fp->tcp_options_order[count++] = HEV_TCP_OPT_NOP;
+                else if (0 == strcmp (opt, "eol"))
+                    fp->tcp_options_order[count++] = HEV_TCP_OPT_EOL;
+            }
+            fp->tcp_options_count = count;
+            fp->flags |= HEV_FP_FLAG_TCP_OPTS;
+            continue;
+        }
+
+        if (!v || v->type != YAML_SCALAR_NODE)
+            continue;
+
+        val = (const char *)v->data.scalar.value;
+
+        /* Phase 1: setsockopt fields */
+        if (0 == strcmp (key, "ttl")) {
+            fp->ttl = strtol (val, NULL, 0);
+            fp->flags |= HEV_FP_FLAG_TTL;
+        } else if (0 == strcmp (key, "mss")) {
+            fp->mss = strtol (val, NULL, 0);
+            fp->flags |= HEV_FP_FLAG_MSS;
+        } else if (0 == strcmp (key, "window")) {
+            fp->window = strtol (val, NULL, 0);
+            fp->flags |= HEV_FP_FLAG_WINDOW;
+        } else if (0 == strcmp (key, "df")) {
+            fp->df = hev_socks5_proxy_parse_bool (val);
+            fp->flags |= HEV_FP_FLAG_DF;
+        } else if (0 == strcmp (key, "nodelay")) {
+            fp->nodelay = hev_socks5_proxy_parse_bool (val);
+            fp->flags |= HEV_FP_FLAG_NODELAY;
+        } else if (0 == strcmp (key, "ecn")) {
+            fp->ecn = strtol (val, NULL, 0);
+            fp->flags |= HEV_FP_FLAG_ECN;
+        } else if (0 == strcmp (key, "tos")) {
+            fp->tos = strtol (val, NULL, 0);
+            fp->flags |= HEV_FP_FLAG_TOS;
+        } else if (0 == strcmp (key, "sndbuf")) {
+            fp->sndbuf = strtol (val, NULL, 0);
+            fp->flags |= HEV_FP_FLAG_SNDBUF;
+        } else if (0 == strcmp (key, "rcvbuf")) {
+            fp->rcvbuf = strtol (val, NULL, 0);
+            fp->flags |= HEV_FP_FLAG_RCVBUF;
+        } else if (0 == strcmp (key, "congestion")) {
+            strncpy (fp->congestion, val, sizeof (fp->congestion) - 1);
+            fp->flags |= HEV_FP_FLAG_CONGESTION;
+        } else if (0 == strcmp (key, "keepalive")) {
+            fp->keepalive = hev_socks5_proxy_parse_bool (val);
+            fp->flags |= HEV_FP_FLAG_KEEPALIVE;
+        } else if (0 == strcmp (key, "keepalive_idle")) {
+            fp->keepalive_idle = strtol (val, NULL, 0);
+            fp->flags |= HEV_FP_FLAG_KEEPALIVE;
+        } else if (0 == strcmp (key, "keepalive_intvl")) {
+            fp->keepalive_intvl = strtol (val, NULL, 0);
+            fp->flags |= HEV_FP_FLAG_KEEPALIVE;
+        } else if (0 == strcmp (key, "keepalive_cnt")) {
+            fp->keepalive_cnt = strtol (val, NULL, 0);
+            fp->flags |= HEV_FP_FLAG_KEEPALIVE;
+        } else if (0 == strcmp (key, "urgent")) {
+            fp->urgent = hev_socks5_proxy_parse_bool (val);
+            fp->flags |= HEV_FP_FLAG_URGENT;
+        /* Phase 2: deep fields (eBPF / DKMS) */
+        } else if (0 == strcmp (key, "wscale")) {
+            fp->wscale = strtol (val, NULL, 0);
+            fp->flags |= HEV_FP_FLAG_WSCALE;
+        } else if (0 == strcmp (key, "sack_perm")) {
+            fp->sack_perm = hev_socks5_proxy_parse_bool (val);
+            fp->flags |= HEV_FP_FLAG_SACK_PERM;
+        } else if (0 == strcmp (key, "timestamps")) {
+            fp->timestamps = hev_socks5_proxy_parse_bool (val);
+            fp->flags |= HEV_FP_FLAG_TIMESTAMPS;
+        } else if (0 == strcmp (key, "ts_clock")) {
+            fp->ts_clock = strtol (val, NULL, 0);
+            fp->flags |= HEV_FP_FLAG_TS_CLOCK;
+        } else if (0 == strcmp (key, "init_window")) {
+            fp->init_window = strtol (val, NULL, 0);
+            fp->flags |= HEV_FP_FLAG_INIT_WINDOW;
+        /* --- IP layer --- */
+        } else if (0 == strcmp (key, "ip_id")) {
+            if (0 == strcmp (val, "incr"))
+                fp->ip_id_behavior = HEV_FP_IPID_INCR;
+            else if (0 == strcmp (val, "random"))
+                fp->ip_id_behavior = HEV_FP_IPID_RANDOM;
+            else if (0 == strcmp (val, "zero"))
+                fp->ip_id_behavior = HEV_FP_IPID_ZERO;
+            else if (0 == strcmp (val, "const"))
+                fp->ip_id_behavior = HEV_FP_IPID_CONST;
+            fp->flags |= HEV_FP_FLAG_IP_ID;
+        } else if (0 == strcmp (key, "ip_opt_len")) {
+            fp->ip_opt_len = strtol (val, NULL, 0);
+            fp->flags |= HEV_FP_FLAG_IP_OPT_LEN;
+        } else if (0 == strcmp (key, "flow_label")) {
+            fp->flow_label = strtoul (val, NULL, 0) & 0xFFFFF;
+            fp->flags |= HEV_FP_FLAG_FLOW_LABEL;
+        /* --- NOP padding --- */
+        } else if (0 == strcmp (key, "nop_padding")) {
+            if (0 == strcmp (val, "none"))
+                fp->nop_padding = HEV_FP_PAD_NONE;
+            else if (0 == strcmp (val, "front"))
+                fp->nop_padding = HEV_FP_PAD_FRONT;
+            else if (0 == strcmp (val, "back"))
+                fp->nop_padding = HEV_FP_PAD_BACK;
+            else if (0 == strcmp (val, "align4"))
+                fp->nop_padding = HEV_FP_PAD_ALIGN4;
+            fp->flags |= HEV_FP_FLAG_NOP_PADDING;
+        /* --- Timing --- */
+        } else if (0 == strcmp (key, "ts_initial")) {
+            fp->ts_initial = strtol (val, NULL, 0);
+            fp->flags2 |= HEV_FP_FLAG2_TS_INITIAL;
+        } else if (0 == strcmp (key, "rto_pattern")) {
+            if (0 == strcmp (val, "linux"))
+                fp->rto_pattern = HEV_FP_RTO_LINUX;
+            else if (0 == strcmp (val, "windows"))
+                fp->rto_pattern = HEV_FP_RTO_WINDOWS;
+            else if (0 == strcmp (val, "macos"))
+                fp->rto_pattern = HEV_FP_RTO_MACOS;
+            else if (0 == strcmp (val, "custom"))
+                fp->rto_pattern = HEV_FP_RTO_CUSTOM;
+            fp->flags2 |= HEV_FP_FLAG2_RTO;
+        } else if (0 == strcmp (key, "rto_initial_ms")) {
+            fp->rto_initial_ms = strtol (val, NULL, 0);
+            fp->flags2 |= HEV_FP_FLAG2_RTO;
+        } else if (0 == strcmp (key, "retransmit_count")) {
+            fp->retransmit_count = strtol (val, NULL, 0);
+            fp->flags2 |= HEV_FP_FLAG2_RETRANSMIT;
+        /* --- ISN --- */
+        } else if (0 == strcmp (key, "isn_pattern")) {
+            if (0 == strcmp (val, "random"))
+                fp->isn_pattern = HEV_FP_ISN_RANDOM;
+            else if (0 == strcmp (val, "incr"))
+                fp->isn_pattern = HEV_FP_ISN_INCR;
+            else if (0 == strcmp (val, "const"))
+                fp->isn_pattern = HEV_FP_ISN_CONST;
+            else if (0 == strcmp (val, "time_based"))
+                fp->isn_pattern = HEV_FP_ISN_TIME_BASED;
+            else if (0 == strcmp (val, "broken"))
+                fp->isn_pattern = HEV_FP_ISN_BROKEN;
+            fp->flags2 |= HEV_FP_FLAG2_ISN;
+        } else if (0 == strcmp (key, "isn_const")) {
+            fp->isn_const = strtoul (val, NULL, 0);
+            fp->flags2 |= HEV_FP_FLAG2_ISN;
+        } else if (0 == strcmp (key, "isn_incr_rate")) {
+            fp->isn_incr_rate = strtol (val, NULL, 0);
+            fp->flags2 |= HEV_FP_FLAG2_ISN;
+        /* --- RST/FIN/ACK behavior --- */
+        } else if (0 == strcmp (key, "rst_df")) {
+            fp->rst_df = hev_socks5_proxy_parse_bool (val);
+            fp->flags |= HEV_FP_FLAG_RST_DF;
+        } else if (0 == strcmp (key, "rst_ack")) {
+            fp->rst_ack = hev_socks5_proxy_parse_bool (val);
+            fp->flags |= HEV_FP_FLAG_RST_ACK;
+        } else if (0 == strcmp (key, "rst_ttl")) {
+            fp->rst_ttl = strtol (val, NULL, 0);
+            fp->flags |= HEV_FP_FLAG_RST_TTL;
+        } else if (0 == strcmp (key, "rst_window")) {
+            fp->rst_window = strtol (val, NULL, 0);
+            fp->flags |= HEV_FP_FLAG_RST_WINDOW;
+        } else if (0 == strcmp (key, "fin_df")) {
+            fp->fin_df = hev_socks5_proxy_parse_bool (val);
+            fp->flags |= HEV_FP_FLAG_FIN_DF;
+        } else if (0 == strcmp (key, "ack_df")) {
+            fp->ack_df = hev_socks5_proxy_parse_bool (val);
+            fp->flags2 |= HEV_FP_FLAG2_ACK_DF;
+        /* --- p0f signature fields --- */
+        } else if (0 == strcmp (key, "win_type")) {
+            if (0 == strcmp (val, "normal"))
+                fp->win_type = HEV_FP_WIN_NORMAL;
+            else if (0 == strcmp (val, "mss_mult"))
+                fp->win_type = HEV_FP_WIN_MSS_MULT;
+            else if (0 == strcmp (val, "mtu_mult"))
+                fp->win_type = HEV_FP_WIN_MTU_MULT;
+            else if (0 == strcmp (val, "mod"))
+                fp->win_type = HEV_FP_WIN_MOD;
+            fp->flags |= HEV_FP_FLAG_WIN_TYPE;
+        } else if (0 == strcmp (key, "win_multiplier")) {
+            fp->win_multiplier = strtol (val, NULL, 0);
+            fp->flags |= HEV_FP_FLAG_WIN_TYPE;
+        } else if (0 == strcmp (key, "pclass")) {
+            if (0 == strcmp (val, "zero"))
+                fp->pclass = HEV_FP_PCLASS_ZERO;
+            else if (0 == strcmp (val, "nonzero"))
+                fp->pclass = HEV_FP_PCLASS_NONZERO;
+            else if (0 == strcmp (val, "any"))
+                fp->pclass = HEV_FP_PCLASS_ANY;
+            fp->flags |= HEV_FP_FLAG_PCLASS;
+        } else if (0 == strcmp (key, "ttl_guess")) {
+            fp->ttl_guess = strtol (val, NULL, 0);
+            fp->flags2 |= HEV_FP_FLAG2_IPTTL_GUESS;
+        /* --- SYN packet --- */
+        } else if (0 == strcmp (key, "syn_size")) {
+            fp->syn_size = strtol (val, NULL, 0);
+            fp->flags2 |= HEV_FP_FLAG2_SYN_SIZE;
+        } else if (0 == strcmp (key, "syn_urg_ptr")) {
+            fp->syn_urg_ptr = strtol (val, NULL, 0);
+            fp->flags2 |= HEV_FP_FLAG2_TCP_FLAGS;
+        } else if (0 == strcmp (key, "syn_flags_extra")) {
+            fp->syn_flags_extra = strtol (val, NULL, 0);
+            fp->flags2 |= HEV_FP_FLAG2_TCP_FLAGS;
+        /* --- Window behavior --- */
+        } else if (0 == strcmp (key, "win_behavior")) {
+            if (0 == strcmp (val, "static"))
+                fp->win_behavior = HEV_FP_WINB_STATIC;
+            else if (0 == strcmp (val, "scale"))
+                fp->win_behavior = HEV_FP_WINB_SCALE;
+            else if (0 == strcmp (val, "noscale"))
+                fp->win_behavior = HEV_FP_WINB_NOSCALE;
+            fp->flags2 |= HEV_FP_FLAG2_WIN_BEHAVIOR;
+        }
+    }
+
+    /* Parse quirks bitmask from sequence if present */
+    for (pair = node->data.mapping.pairs.start;
+         pair < node->data.mapping.pairs.top; pair++) {
+        yaml_node_t *k = yaml_document_get_node (doc, pair->key);
+        yaml_node_t *v = yaml_document_get_node (doc, pair->value);
+
+        if (!k || k->type != YAML_SCALAR_NODE)
+            continue;
+
+        const char *key = (const char *)k->data.scalar.value;
+
+        if (v && v->type == YAML_SEQUENCE_NODE &&
+            0 == strcmp (key, "quirks")) {
+            yaml_node_item_t *item;
+            fp->quirks = 0;
+            for (item = v->data.sequence.items.start;
+                 item < v->data.sequence.items.top; item++) {
+                yaml_node_t *n = yaml_document_get_node (doc, *item);
+                const char *q;
+                if (!n || n->type != YAML_SCALAR_NODE)
+                    continue;
+                q = (const char *)n->data.scalar.value;
+                if (0 == strcmp (q, "df"))
+                    fp->quirks |= HEV_FP_QUIRK_DF;
+                else if (0 == strcmp (q, "id+"))
+                    fp->quirks |= HEV_FP_QUIRK_ID_PLUS;
+                else if (0 == strcmp (q, "id-"))
+                    fp->quirks |= HEV_FP_QUIRK_ID_MINUS;
+                else if (0 == strcmp (q, "ecn"))
+                    fp->quirks |= HEV_FP_QUIRK_ECN;
+                else if (0 == strcmp (q, "0+"))
+                    fp->quirks |= HEV_FP_QUIRK_ZERO_PLUS;
+                else if (0 == strcmp (q, "flow"))
+                    fp->quirks |= HEV_FP_QUIRK_FLOW;
+                else if (0 == strcmp (q, "seq-"))
+                    fp->quirks |= HEV_FP_QUIRK_SEQ_MINUS;
+                else if (0 == strcmp (q, "ack+"))
+                    fp->quirks |= HEV_FP_QUIRK_ACK_PLUS;
+                else if (0 == strcmp (q, "ack-"))
+                    fp->quirks |= HEV_FP_QUIRK_ACK_MINUS;
+                else if (0 == strcmp (q, "uptr+"))
+                    fp->quirks |= HEV_FP_QUIRK_UPTR_PLUS;
+                else if (0 == strcmp (q, "urgf+"))
+                    fp->quirks |= HEV_FP_QUIRK_URGF_PLUS;
+                else if (0 == strcmp (q, "pushf+"))
+                    fp->quirks |= HEV_FP_QUIRK_PUSHF_PLUS;
+                else if (0 == strcmp (q, "ts1-"))
+                    fp->quirks |= HEV_FP_QUIRK_TS1_MINUS;
+                else if (0 == strcmp (q, "ts2+"))
+                    fp->quirks |= HEV_FP_QUIRK_TS2_PLUS;
+                else if (0 == strcmp (q, "opt+"))
+                    fp->quirks |= HEV_FP_QUIRK_OPT_PLUS;
+                else if (0 == strcmp (q, "exws"))
+                    fp->quirks |= HEV_FP_QUIRK_EXWS;
+                else if (0 == strcmp (q, "bad"))
+                    fp->quirks |= HEV_FP_QUIRK_BAD;
+            }
+            fp->flags |= HEV_FP_FLAG_QUIRKS;
+        }
+
+        /* rto_values sequence */
+        if (v && v->type == YAML_SEQUENCE_NODE &&
+            0 == strcmp (key, "rto_values")) {
+            yaml_node_item_t *item;
+            int count = 0;
+            for (item = v->data.sequence.items.start;
+                 item < v->data.sequence.items.top && count < 16;
+                 item++) {
+                yaml_node_t *n = yaml_document_get_node (doc, *item);
+                if (!n || n->type != YAML_SCALAR_NODE)
+                    continue;
+                fp->rto_values[count++] =
+                    strtol ((const char *)n->data.scalar.value, NULL, 0);
+            }
+            fp->rto_count = count;
+            fp->flags2 |= HEV_FP_FLAG2_RTO;
+        }
+
+        /* win_response sequence */
+        if (v && v->type == YAML_SEQUENCE_NODE &&
+            0 == strcmp (key, "win_response")) {
+            yaml_node_item_t *item;
+            int count = 0;
+            for (item = v->data.sequence.items.start;
+                 item < v->data.sequence.items.top && count < 6;
+                 item++) {
+                yaml_node_t *n = yaml_document_get_node (doc, *item);
+                if (!n || n->type != YAML_SCALAR_NODE)
+                    continue;
+                fp->win_response[count++] =
+                    strtol ((const char *)n->data.scalar.value, NULL, 0);
+            }
+            fp->win_response_count = count;
+            fp->flags2 |= HEV_FP_FLAG2_WIN_BEHAVIOR;
+        }
+    }
+
+    if (!fp->flags && !fp->flags2) {
+        free (fp);
+        return NULL;
+    }
+
+    return fp;
+}
 
 static void
 hev_socks5_proxy_load_file_yaml (HevSocks5Authenticator *auth,
@@ -79,16 +453,29 @@ hev_socks5_proxy_load_file_yaml (HevSocks5Authenticator *auth,
             char *password = NULL;
             char *iface = NULL;
             unsigned long mark = 0;
+            HevFingerprint *fp = NULL;
 
             yaml_node_pair_t *pair;
             for (pair = node->data.mapping.pairs.start;
                  pair < node->data.mapping.pairs.top; pair++) {
                 yaml_node_t *k = yaml_document_get_node (&doc, pair->key);
                 yaml_node_t *v = yaml_document_get_node (&doc, pair->value);
-                if (!k || !v || k->type != YAML_SCALAR_NODE ||
-                    v->type != YAML_SCALAR_NODE)
+                const char *key;
+
+                if (!k || !v || k->type != YAML_SCALAR_NODE)
                     continue;
-                const char *key = (const char *)k->data.scalar.value;
+
+                key = (const char *)k->data.scalar.value;
+
+                if (0 == strcmp (key, "fingerprint") &&
+                    v->type == YAML_MAPPING_NODE) {
+                    fp = hev_socks5_proxy_parse_fingerprint (&doc, v);
+                    continue;
+                }
+
+                if (v->type != YAML_SCALAR_NODE)
+                    continue;
+
                 const char *val = (const char *)v->data.scalar.value;
                 if (0 == strcmp (key, "username"))
                     username = (char *)val;
@@ -98,6 +485,8 @@ hev_socks5_proxy_load_file_yaml (HevSocks5Authenticator *auth,
                     mark = strtoul (val, NULL, 0);
                 else if (0 == strcmp (key, "iface"))
                     iface = (char *)val;
+                else if (0 == strcmp (key, "p0f") && !fp)
+                    fp = hev_p0f_parse (val);
             }
 
             if (username && password) {
@@ -105,13 +494,18 @@ hev_socks5_proxy_load_file_yaml (HevSocks5Authenticator *auth,
                 user = hev_socks5_user_mark_new (username, strlen (username),
                                                  password, strlen (password),
                                                  (unsigned int)mark);
-                if (!user)
+                if (!user) {
+                    free (fp);
                     continue;
+                }
                 if (iface && iface[0] != '\0')
                     user->iface = strdup (iface);
+                user->fingerprint = fp;
                 if (hev_socks5_authenticator_add (auth,
                                                   HEV_SOCKS5_USER (user)) < 0)
                     hev_object_unref (HEV_OBJECT (user));
+            } else {
+                free (fp);
             }
         }
     } else if (root && root->type == YAML_MAPPING_NODE) {
@@ -135,6 +529,7 @@ hev_socks5_proxy_load_file_yaml (HevSocks5Authenticator *auth,
                     char *password = NULL;
                     char *iface = NULL;
                     unsigned long mark = 0;
+                    HevFingerprint *fp = NULL;
                     yaml_node_pair_t *mpair;
                     for (mpair = node->data.mapping.pairs.start;
                          mpair < node->data.mapping.pairs.top; mpair++) {
@@ -142,11 +537,22 @@ hev_socks5_proxy_load_file_yaml (HevSocks5Authenticator *auth,
                             yaml_document_get_node (&doc, mpair->key);
                         yaml_node_t *mv =
                             yaml_document_get_node (&doc, mpair->value);
-                        if (!mk || !mv || mk->type != YAML_SCALAR_NODE ||
-                            mv->type != YAML_SCALAR_NODE)
+                        const char *mkey;
+
+                        if (!mk || !mv || mk->type != YAML_SCALAR_NODE)
                             continue;
-                        const char *mkey =
-                            (const char *)mk->data.scalar.value;
+
+                        mkey = (const char *)mk->data.scalar.value;
+
+                        if (0 == strcmp (mkey, "fingerprint") &&
+                            mv->type == YAML_MAPPING_NODE) {
+                            fp = hev_socks5_proxy_parse_fingerprint (&doc, mv);
+                            continue;
+                        }
+
+                        if (mv->type != YAML_SCALAR_NODE)
+                            continue;
+
                         const char *mval =
                             (const char *)mv->data.scalar.value;
                         if (0 == strcmp (mkey, "username"))
@@ -157,19 +563,26 @@ hev_socks5_proxy_load_file_yaml (HevSocks5Authenticator *auth,
                             mark = strtoul (mval, NULL, 0);
                         else if (0 == strcmp (mkey, "iface"))
                             iface = (char *)mval;
+                        else if (0 == strcmp (mkey, "p0f") && !fp)
+                            fp = hev_p0f_parse (mval);
                     }
                     if (username && password) {
                         HevSocks5UserMark *user;
                         user = hev_socks5_user_mark_new (
                             username, strlen (username), password,
                             strlen (password), (unsigned int)mark);
-                        if (!user)
+                        if (!user) {
+                            free (fp);
                             continue;
+                        }
                         if (iface && iface[0] != '\0')
                             user->iface = strdup (iface);
+                        user->fingerprint = fp;
                         if (hev_socks5_authenticator_add (
                                 auth, HEV_SOCKS5_USER (user)) < 0)
                             hev_object_unref (HEV_OBJECT (user));
+                    } else {
+                        free (fp);
                     }
                 }
             }
@@ -341,6 +754,8 @@ hev_socks5_proxy_init (void)
         goto exit;
     }
 
+    hev_fingerprint_detect_caps ();
+
     signal (SIGPIPE, SIG_IGN);
     signal (SIGUSR1, sigint_handler);
 
@@ -355,6 +770,8 @@ void
 hev_socks5_proxy_fini (void)
 {
     LOG_D ("socks5 proxy fini");
+
+    hev_fingerprint_backend_fini ();
 
     if (task)
         hev_task_unref (task);

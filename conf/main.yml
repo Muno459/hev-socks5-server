@@ -31,8 +31,8 @@ main:
   # Socket mark (hex: 0x1, dec: 1, oct: 01)
   mark: 0
 
-#auth:
-# file: conf/auth.txt
+auth:
+  file: conf/auth.json
 # username:
 # password:
 
@@ -44,7 +44,7 @@ main:
   # number of udp buffers in splice, 1500 bytes per buffer.
 # udp-copy-buffer-nums: 10
   # TCP connect timeout (ms)
-# connect-timeout: 10000
+  connect-timeout: 30000
   # TCP read-write timeout (ms)
 # tcp-read-write-timeout: 300000
   # UDP read-write timeout (ms)

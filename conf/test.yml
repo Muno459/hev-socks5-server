@@ -1,0 +1,12 @@
+main:
+  workers: 1
+  port: 1080
+  listen-address: '127.0.0.1'
+  listen-ipv6-only: false
+
+auth:
+  file: conf/auth.json
+
+misc:
+  log-file: stderr
+  log-level: debug

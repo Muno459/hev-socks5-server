@@ -16,6 +16,8 @@
 #include "hev-logger.h"
 #include "hev-config.h"
 #include "hev-socks5-user-mark.h"
+#include "hev-fingerprint.h"
+#include "hev-p0f-parser.h"
 
 #include "hev-socks5-session.h"
 
@@ -105,6 +107,31 @@ hev_socks5_session_bind (HevSocks5 *self, int fd, const struct sockaddr *dest)
         res = set_sock_mark (fd, mark);
         if (res < 0)
             return -1;
+    }
+
+    if (srv->user) {
+        HevSocks5UserMark *user = HEV_SOCKS5_USER_MARK (srv->user);
+        if (user->fingerprint) {
+            /* Pre-configured fingerprint from auth file */
+            hev_fingerprint_apply_sockopt (fd, family, user->fingerprint);
+        } else if (user->client_pass) {
+            /*
+             * Dynamic fingerprint from password.
+             *
+             * Formats:
+             *   socks5://fp:4.128.0.1460.65535,8.mss,nop,ws,nop,nop,sok.df,id+.0@host
+             *   socks5://user:pass(4.128.0.1460.65535,8.mss,nop,ws,nop,nop,sok.df,id+.0)@host
+             *
+             * Active TCP FP params after ~:
+             *   ...df,id+.0~rto=l,isn=r,ts=1000
+             */
+            HevFingerprint *fp = hev_p0f_parse_username (
+                user->client_pass, user->client_pass_len);
+            if (fp) {
+                hev_fingerprint_apply_sockopt (fd, family, fp);
+                free (fp);
+            }
+        }
     }
 
     return 0;
