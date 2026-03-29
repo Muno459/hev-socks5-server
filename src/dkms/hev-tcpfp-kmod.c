@@ -1,24 +1,25 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * hev-tcpfp-kmod.c — TCP/IP fingerprint spoofing kernel module v6.
+ * hev-tcpfp-kmod.c — TCP/IP fingerprint spoofing kernel module v7.
  *
- * FULLY NATIVE TCP emission via kprobes — the kernel TCP stack builds
- * correct packets. Netfilter only handles IP-layer fields.
+ * Function replacement via ftrace + struct injection via kprobes.
  *
- * Native kprobes (TCP layer):
+ * ftrace (function redirect):
+ *   - tcp_options_write: for fingerprinted sockets, our function runs
+ *     INSTEAD of the original. Writes options in target order from
+ *     scratch. Original never executes. For non-fingerprinted sockets,
+ *     the original kernel code runs 100% unchanged.
+ *
+ * kprobes (struct field injection — kernel reads our values natively):
  *   - ISN: kprobe tcp_connect → tp->write_seq
  *   - RTO: kretprobe tcp_connect_init → icsk->icsk_rto (initial)
  *          kprobe tcp_retransmit_timer → icsk->icsk_rto (subsequent)
  *   - Window: kretprobe tcp_connect_init → tp->rcv_wnd
  *   - WScale: kretprobe tcp_connect_init → tp->rx_opt.rcv_wscale
- *   - SACK/TS/MSS/WS values: kretprobe tcp_syn_options → opts struct
- *   - TCP option ORDER: kretprobe tcp_options_write → in-place reorder
- *   - TS clock scaling: kretprobe tcp_options_write → per-packet
+ *   - SACK/TS/WS flags: kretprobe tcp_syn_options → opts struct
  *
  * Netfilter LOCAL_OUT (IP-layer only, no TCP modifications):
- *   - IP ID behavior (zero/random/incremental)
- *   - RST/FIN/ACK DF flags
- *   - RST TTL/window
+ *   - IP ID behavior
  *
  * Checksum: TCP checksum is computed by kernel AFTER our tcp_options_write
  * kretprobe, so it's naturally correct. We only recalculate IP header
@@ -41,6 +42,7 @@
 #include <linux/skbuff.h>
 #include <linux/random.h>
 #include <linux/jiffies.h>
+#include <linux/ftrace.h>
 #include <linux/netfilter.h>
 #include <linux/netfilter_ipv4.h>
 #include <linux/netfilter_ipv6.h>
@@ -52,8 +54,8 @@
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("hev-socks5-server");
-MODULE_DESCRIPTION("TCP/IP fingerprint spoofing v6 (fully native TCP via kprobes)");
-MODULE_VERSION("6.0");
+MODULE_DESCRIPTION("TCP/IP fingerprint spoofing v7 (ftrace function redirect + kprobes)");
+MODULE_VERSION("7.0");
 
 #define DEVICE_NAME    "hev-tcpfp"
 #define CLASS_NAME     "hev-tcpfp"
@@ -516,175 +518,163 @@ static struct kretprobe krp_syn_options = {
     .kp.symbol_name = "tcp_syn_options",
 };
 
-/* --- kretprobe: tcp_options_write --- option ORDER + TS clock scaling
+/* ================================================================
+ * FTRACE FUNCTION REDIRECT: tcp_options_write
  *
- * This is the KEY native hook. tcp_options_write() writes TCP options in
- * a hardcoded order (MSS, TS+SACK, WS). We rewrite them in-place in the
- * target order immediately after. This happens BEFORE the kernel computes
- * the TCP checksum, so the checksum naturally covers our reordered options.
+ * For fingerprinted sockets: our function REPLACES tcp_options_write.
+ * The original never executes. Our code writes options in the correct
+ * order from scratch. The TCP checksum is computed AFTER our function
+ * returns, so it naturally covers our bytes.
  *
- * tcp_options_write signature:
- *   void tcp_options_write(struct tcphdr *th, struct tcp_sock *tp,
- *                          const struct tcp_request_sock *tcprsk,
- *                          struct tcp_out_options *opts,
- *                          struct tcp_key *key)
- * x86_64: rdi=th, rsi=tp
+ * For non-fingerprinted sockets: ftrace callback doesn't modify regs.
+ * The original kernel tcp_options_write runs 100% unchanged.
+ *
+ * tcp_options_write signature (x86_64):
+ *   void tcp_options_write(th, tp, tcprsk, opts, key)
+ *   rdi=th, rsi=tp, rdx=tcprsk, rcx=opts, r8=key
+ *
+ * tcp_out_options layout (kernel 6.8):
+ *   offset 0:  u16 options (bitmask)
+ *   offset 2:  u16 mss
+ *   offset 4:  u8  ws
+ *   offset 5:  u8  num_sack_blocks
+ *   offset 16: u32 tsval
+ *   offset 20: u32 tsecr
+ * ================================================================ */
+
+static unsigned long ftrace_opts_target_addr;
+
+/*
+ * Our tcp_options_write for fingerprinted sockets.
+ * Called INSTEAD of the kernel's — the original never runs.
+ * Same calling convention (params in same registers).
  */
-
-struct opts_write_data {
-    struct tcphdr *th;
-    struct tcp_sock *tp;
-};
-
-static int krp_opts_write_entry(struct kretprobe_instance *ri,
-                                 struct pt_regs *regs)
+static void notrace fp_tcp_options_write(struct tcphdr *th,
+    struct tcp_sock *tp, void *tcprsk, void *opts, void *key)
 {
-    struct opts_write_data *d = (struct opts_write_data *)ri->data;
-    d->th = (struct tcphdr *)regs->di;
-    d->tp = (struct tcp_sock *)regs->si;
-    return 0;
-}
-
-static int krp_opts_write_ret(struct kretprobe_instance *ri,
-                               struct pt_regs *regs)
-{
-    struct opts_write_data *d = (struct opts_write_data *)ri->data;
-    struct tcphdr *th = d->th;
-    struct tcp_sock *tp = d->tp;
-    struct sock *sk;
     struct fp_entry *fp;
     struct hev_tcpfp_req *req;
     u64 cookie;
-    unsigned int hdrlen, opts_len;
-    u8 *opts, *p;
+    u16 options = *(u16 *)opts;
+    u16 mss     = *(u16 *)(opts + 2);
+    u8  ws;
+    u32 tsval   = *(u32 *)(opts + 16);
+    u32 tsecr   = *(u32 *)(opts + 20);
+    u8  num_sack_blocks = *(u8 *)(opts + 5);
 
-    if (!th || !tp) return 0;
+    cookie = atomic64_read(&((struct sock *)tp)->sk_cookie);
+    rcu_read_lock();
+    fp = fp_find(cookie);
+    rcu_read_unlock();
+    if (!fp) return;
 
-    sk = (struct sock *)tp;
-    cookie = atomic64_read(&sk->sk_cookie);
-    if (!cookie) return 0;
+    req = &fp->req;
+    ws = req->wscale > 0 ? req->wscale : *(u8 *)(opts + 4);
+
+    /* TS clock scaling — applied to ALL packets */
+    if (req->ts_clock > 0 && req->ts_clock != 1000 && tsval) {
+        if (req->ts_clock < 1000)
+            tsval = tsval / (1000 / req->ts_clock);
+        else
+            tsval = tsval * (req->ts_clock / 1000);
+    }
+
+    /* === SYN: write options in target order (byte-level) === */
+    if (th->syn && !th->ack && req->tcp_options_count > 0) {
+        u8 *p = (u8 *)(th + 1);
+        int i;
+        for (i = 0; i < req->tcp_options_count && i < 16; i++) {
+            switch (req->tcp_options_order[i]) {
+            case OPT_NOP: *p++ = TCPOPT_NOP; break;
+            case OPT_EOL: *p++ = TCPOPT_EOL; break;
+            case OPT_MSS:
+                *p++ = TCPOPT_MSS; *p++ = TCPOLEN_MSS;
+                *(u16 *)p = htons(mss); p += 2;
+                break;
+            case OPT_WS:
+                *p++ = TCPOPT_WINDOW; *p++ = TCPOLEN_WINDOW;
+                *p++ = ws;
+                break;
+            case OPT_SACK:
+                *p++ = TCPOPT_SACK_PERM; *p++ = TCPOLEN_SACK_PERM;
+                break;
+            case OPT_TS:
+                if (options & KERN_OPT_TS) {
+                    *p++ = TCPOPT_TIMESTAMP; *p++ = TCPOLEN_TIMESTAMP;
+                    *(u32 *)p = htonl(tsval); p += 4;
+                    *(u32 *)p = htonl(tsecr); p += 4;
+                }
+                break;
+            }
+        }
+        return;
+    }
+
+    /* === Established: standard order + TS clock scaling === */
+    {
+        __be32 *ptr = (__be32 *)(th + 1);
+
+        if (options & KERN_OPT_TS) {
+            *ptr++ = htonl((TCPOPT_NOP << 24) | (TCPOPT_NOP << 16) |
+                           (TCPOPT_TIMESTAMP << 8) | TCPOLEN_TIMESTAMP);
+            *ptr++ = htonl(tsval);
+            *ptr++ = htonl(tsecr);
+        }
+
+        if (num_sack_blocks) {
+            struct tcp_sack_block *sp = tp->rx_opt.dsack ?
+                tp->duplicate_sack : tp->selective_acks;
+            int s;
+            *ptr++ = htonl((TCPOPT_NOP << 24) | (TCPOPT_NOP << 16) |
+                           (TCPOPT_SACK << 8) |
+                           (TCPOLEN_SACK_BASE +
+                            num_sack_blocks * TCPOLEN_SACK_PERBLOCK));
+            for (s = 0; s < num_sack_blocks; s++) {
+                *ptr++ = htonl(sp[s].start_seq);
+                *ptr++ = htonl(sp[s].end_seq);
+            }
+            tp->rx_opt.dsack = 0;
+        }
+    }
+}
+
+/*
+ * ftrace callback — decides per-call whether to redirect.
+ * Non-fingerprinted sockets: don't touch regs → original runs.
+ * Fingerprinted sockets: regs->ip = our function → original skipped.
+ */
+static void notrace ftrace_opts_handler(unsigned long ip,
+                                         unsigned long parent_ip,
+                                         struct ftrace_ops *op,
+                                         struct ftrace_regs *fregs)
+{
+    struct pt_regs *regs = ftrace_get_regs(fregs);
+    struct tcp_sock *tp;
+    struct fp_entry *fp;
+    u64 cookie;
+
+    if (!regs) return;
+
+    tp = (struct tcp_sock *)regs->si; /* rsi = tp */
+    if (!tp) return;
+
+    cookie = atomic64_read(&((struct sock *)tp)->sk_cookie);
+    if (!cookie) return;
 
     rcu_read_lock();
     fp = fp_find(cookie);
     rcu_read_unlock();
-    if (!fp) return 0;
+    if (!fp) return;
+    if (!fp->req.tcp_options_count && !fp->req.ts_clock)
+        return;
 
-    req = &fp->req;
-    hdrlen = th->doff * 4;
-    if (hdrlen <= sizeof(struct tcphdr))
-        return 0;
-    opts = (u8 *)th + sizeof(struct tcphdr);
-    opts_len = hdrlen - sizeof(struct tcphdr);
-
-    /* --- SYN: reorder options to match target fingerprint --- */
-    if (th->syn && !th->ack && req->tcp_options_count > 0) {
-        u16 mss_val = 0;
-        u8 ws_val = 0;
-        u32 tsval = 0, tsecr = 0;
-        int has_ts = 0;
-        int i, wrote;
-
-        /* Parse what kernel wrote (fixed order: MSS, TS+SACK, WS) */
-        p = opts;
-        while (p < opts + opts_len) {
-            u8 kind = *p, len;
-            if (kind == OPT_EOL) break;
-            if (kind == OPT_NOP) { p++; continue; }
-            if (p + 1 >= opts + opts_len) break;
-            len = *(p + 1);
-            if (len < 2 || p + len > opts + opts_len) break;
-            switch (kind) {
-            case OPT_MSS:
-                if (len >= 4) mss_val = ntohs(*(u16 *)(p + 2));
-                break;
-            case OPT_WS:
-                if (len >= 3) ws_val = *(p + 2);
-                break;
-            case OPT_TS:
-                if (len >= 10) {
-                    tsval = ntohl(*(u32 *)(p + 2));
-                    tsecr = ntohl(*(u32 *)(p + 6));
-                    has_ts = 1;
-                }
-                break;
-            }
-            p += len;
-        }
-
-        /* Override values */
-        if (req->wscale > 0) ws_val = req->wscale;
-
-        /* Rewrite in target order */
-        memset(opts, 0, opts_len);
-        p = opts;
-        wrote = 0;
-
-        for (i = 0; i < req->tcp_options_count && i < 16; i++) {
-            u8 kind = req->tcp_options_order[i];
-            int need;
-            switch (kind) {
-            case OPT_NOP: case OPT_EOL: need = 1; break;
-            case OPT_MSS:  need = 4; break;
-            case OPT_WS:   need = 3; break;
-            case OPT_SACK: need = 2; break;
-            case OPT_TS:   need = 10; break;
-            default: need = 0;
-            }
-            if (need == 0 || wrote + need > (int)opts_len) break;
-
-            switch (kind) {
-            case OPT_NOP: *p++ = OPT_NOP; break;
-            case OPT_EOL: *p++ = OPT_EOL; break;
-            case OPT_MSS:
-                *p++ = OPT_MSS; *p++ = 4;
-                *(u16 *)p = htons(mss_val); p += 2; break;
-            case OPT_WS:
-                *p++ = OPT_WS; *p++ = 3; *p++ = ws_val; break;
-            case OPT_SACK:
-                *p++ = OPT_SACK; *p++ = 2; break;
-            case OPT_TS:
-                if (!has_ts) break;
-                *p++ = OPT_TS; *p++ = 10;
-                *(u32 *)p = htonl(tsval); p += 4;
-                *(u32 *)p = htonl(tsecr); p += 4; break;
-            }
-            wrote = p - opts;
-        }
-        /* Remaining bytes are already zeroed (EOL padding) */
-        return 0;
-    }
-
-    /* --- All packets: timestamp clock scaling --- */
-    if (req->ts_clock > 0 && req->ts_clock != 1000) {
-        p = opts;
-        while (p < opts + opts_len) {
-            u8 kind = *p, len;
-            if (kind == OPT_EOL) break;
-            if (kind == OPT_NOP) { p++; continue; }
-            if (p + 1 >= opts + opts_len) break;
-            len = *(p + 1);
-            if (len < 2 || p + len > opts + opts_len) break;
-            if (kind == OPT_TS && len >= 10) {
-                u32 ts = ntohl(*(u32 *)(p + 2));
-                if (req->ts_clock < 1000)
-                    ts = ts / (1000 / req->ts_clock);
-                else
-                    ts = ts * (req->ts_clock / 1000);
-                *(u32 *)(p + 2) = htonl(ts);
-            }
-            p += len;
-        }
-    }
-
-    return 0;
+    /* Redirect: our function runs instead of original */
+    regs->ip = (unsigned long)fp_tcp_options_write;
 }
 
-static struct kretprobe krp_opts_write = {
-    .handler = krp_opts_write_ret,
-    .entry_handler = krp_opts_write_entry,
-    .data_size = sizeof(struct opts_write_data),
-    .maxactive = 40,
-    .kp.symbol_name = "tcp_options_write",
+static struct ftrace_ops ftrace_opts_ops = {
+    .func    = ftrace_opts_handler,
+    .flags   = FTRACE_OPS_FL_SAVE_REGS | FTRACE_OPS_FL_IPMODIFY,
 };
 
 /* --- kprobe: tcp_retransmit_timer --- RTO for retransmits */
@@ -940,9 +930,29 @@ static int __init hev_tcpfp_init(void)
     if (ret < 0)
         pr_warn("hev-tcpfp: kretprobe tcp_syn_options failed (%d)\n", ret);
 
-    ret = register_kretprobe(&krp_opts_write);
-    if (ret < 0)
-        pr_warn("hev-tcpfp: kretprobe tcp_options_write failed (%d)\n", ret);
+    /* ftrace redirect for tcp_options_write */
+    {
+        struct kprobe kp_resolve = { .symbol_name = "tcp_options_write" };
+        ret = register_kprobe(&kp_resolve);
+        if (ret == 0) {
+            ftrace_opts_target_addr = (unsigned long)kp_resolve.addr;
+            unregister_kprobe(&kp_resolve);
+
+            ret = ftrace_set_filter_ip(&ftrace_opts_ops,
+                                        ftrace_opts_target_addr, 0, 0);
+            if (ret == 0) {
+                ret = register_ftrace_function(&ftrace_opts_ops);
+                if (ret < 0)
+                    pr_warn("hev-tcpfp: ftrace register failed (%d)\n", ret);
+                else
+                    pr_info("hev-tcpfp: ftrace redirect tcp_options_write active\n");
+            } else {
+                pr_warn("hev-tcpfp: ftrace filter failed (%d)\n", ret);
+            }
+        } else {
+            pr_warn("hev-tcpfp: resolve tcp_options_write failed (%d)\n", ret);
+        }
+    }
 
     ret = register_kprobe(&kp_retransmit);
     if (ret < 0)
@@ -952,7 +962,7 @@ static int __init hev_tcpfp_init(void)
     isn_time_last_jiffies = jiffies;
     isn_time_counter = get_random_u32();
 
-    pr_info("hev-tcpfp: v6 loaded (fully native TCP: ISN+RTO+WIN+WS+SACK+TS+option-order+TS-clock, NF: IP-layer only)\n");
+    pr_info("hev-tcpfp: v7 loaded (ftrace tcp_options_write redirect, kprobes ISN+RTO+WIN+WS+SACK+TS, NF IP-layer)\n");
     return 0;
 }
 
@@ -963,7 +973,10 @@ static void __exit hev_tcpfp_exit(void)
     int bkt, i;
 
     unregister_kprobe(&kp_retransmit);
-    unregister_kretprobe(&krp_opts_write);
+    if (ftrace_opts_target_addr) {
+        unregister_ftrace_function(&ftrace_opts_ops);
+        ftrace_set_filter_ip(&ftrace_opts_ops, ftrace_opts_target_addr, 1, 0);
+    }
     unregister_kretprobe(&krp_syn_options);
     unregister_kretprobe(&krp_connect_init);
     unregister_kprobe(&kp_tcp_connect);
@@ -982,7 +995,7 @@ static void __exit hev_tcpfp_exit(void)
     cdev_del(&dev_cdev);
     class_destroy(dev_class);
     unregister_chrdev_region(dev_num, 1);
-    pr_info("hev-tcpfp: v6 unloaded\n");
+    pr_info("hev-tcpfp: v7 unloaded\n");
 }
 
 module_init(hev_tcpfp_init);
