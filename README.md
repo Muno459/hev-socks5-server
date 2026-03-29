@@ -183,7 +183,7 @@ Mirror the connecting client's TCP fingerprint onto the outgoing connection:
 curl -x socks5h://fp:secret(mirror)@server:1080 http://target
 ```
 
-Uses the kernel's `TCP_SAVE_SYN`/`TCP_SAVED_SYN` (available since Linux 4.2, [originally developed at Google](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=cd8ae85299d54a59b0c53a83ebdf8b7a4a232e1e)) to capture the raw SYN headers from the incoming client connection.
+Uses the kernel's `TCP_SAVE_SYN`/`TCP_SAVED_SYN` (available since Linux 4.2, [originally developed at Google](https://github.com/torvalds/linux/commit/cd8ae85299d54155702a56811b2e035e63064d3d)) to capture the raw SYN headers from the incoming client connection.
 
 Mirror mode does two things:
 
@@ -293,8 +293,12 @@ SkyProxy supports two auth file formats. Both extend the upstream hev-socks5-ser
   { "username": "win10", "password": "pass",
     "p0f": "4:128:0:1460:65535,8:mss,nop,ws,nop,nop,sok:df,id+:0~rto=w" },
 
-  { "username": "linux6", "password": "pass",
-    "p0f": "4:64:0:1460:mss*20,7:mss,sok,ts,nop,ws:df:0" },
+  { "username": "stealth", "password": "pass", "preset": "macos" },
+
+  { "username": "fast", "password": "pass",
+    "ja4t": "65535_2-1-3-1-1-4_1460_8_1-2-4-8" },
+
+  { "username": "transparent", "password": "pass", "p0f": "mirror" },
 
   { "username": "fp", "password": "secret(*)" }
 ]
