@@ -43,7 +43,7 @@
 ## Quick Start
 
 ```bash
-git clone --recursive https://github.com/Muno459/hev-socks5-server
+git clone --recursive https://github.com/Muno459/skyproxy
 cd hev-socks5-server
 make          # builds binary + kernel module + loads it
 ```
