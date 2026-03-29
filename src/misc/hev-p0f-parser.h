@@ -40,6 +40,16 @@ HevFingerprint *hev_p0f_parse (const char *sig);
 HevFingerprint *hev_p0f_parse_username (const char *username,
                                         unsigned int len);
 
+/*
+ * Parse a raw SYN packet (IP + TCP headers) into a fingerprint.
+ * Used for mirror mode: copies the client's TCP fingerprint.
+ * Data is from getsockopt(TCP_SAVED_SYN).
+ *
+ * Returns heap-allocated HevFingerprint on success, NULL on error.
+ */
+HevFingerprint *hev_p0f_parse_syn (const unsigned char *data,
+                                    unsigned int len);
+
 #ifdef __cplusplus
 }
 #endif

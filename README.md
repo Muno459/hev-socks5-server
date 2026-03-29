@@ -155,6 +155,42 @@ Examples:
 
 JA4T signatures can be used anywhere p0f signatures are accepted: in auth.json `"p0f"` field, or in dynamic password encoding.
 
+### Preset profiles
+
+Use built-in OS presets instead of writing full signatures:
+
+```bash
+curl -x socks5h://fp:secret(win11)@server:1080 http://target
+curl -x socks5h://fp:secret(macos)@server:1080 http://target
+curl -x socks5h://fp:secret(ios)@server:1080 http://target
+curl -x socks5h://fp:secret(android)@server:1080 http://target
+curl -x socks5h://fp:secret(linux)@server:1080 http://target
+```
+
+Available presets: `win11`, `win10`, `windows`, `winxp`, `macos`, `mac`, `ios`, `iphone`, `android`, `linux`
+
+Presets include the complete fingerprint with real-device RTO patterns captured from actual hardware. They work in auth.json too:
+
+```json
+{ "username": "stealth", "password": "pass", "p0f": "macos" }
+```
+
+### Mirror mode
+
+Mirror the connecting client's TCP fingerprint onto the outgoing connection:
+
+```bash
+curl -x socks5h://fp:secret(mirror)@server:1080 http://target
+```
+
+Uses the kernel's `TCP_SAVE_SYN`/`TCP_SAVED_SYN` (available since Linux 4.2, [originally developed at Google](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=cd8ae85299d54a59b0c53a83ebdf8b7a4a232e1e)) to capture the raw SYN headers from the incoming client connection. The proxy parses the client's TTL, window size, TCP options, MSS, window scale, ECN flags, and IP ID behavior, then applies them to the outgoing connection. The destination sees the same TCP personality as the original client.
+
+Mirror mode works in auth.json too:
+
+```json
+{ "username": "transparent", "password": "pass", "p0f": "mirror" }
+```
+
 ### Dynamic fingerprinting via password
 
 Set a wildcard user with `(*)` in the password:

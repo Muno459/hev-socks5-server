@@ -12,6 +12,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <arpa/inet.h>
 
 #include "hev-logger.h"
 #include "hev-p0f-parser.h"
@@ -551,15 +552,57 @@ is_ja4t_format (const char *sig)
     return val > 6;
 }
 
+/* ---- Presets ---- */
+
+static const char *preset_sigs[] = {
+    /* name, p0f signature */
+    "win11",   "4:128:0:1460:65535,8:mss,nop,ws,nop,nop,sok:df,id+:0~rto=1000-2000-4000-8000",
+    "win10",   "4:128:0:1460:65535,8:mss,nop,ws,nop,nop,sok:df,id+:0~rto=1000-2000-4000-8000",
+    "windows", "4:128:0:1460:65535,8:mss,nop,ws,nop,nop,sok:df,id+:0~rto=1000-2000-4000-8000",
+    "winxp",   "4:128:0:1460:65535,0:mss,nop,nop,sok:df,id+:0",
+    "macos",   "4:64:0:1460:65535,6:mss,nop,ws,nop,nop,ts,sok,eol+1:df,ecn:0~rto=1000-1000-1000-1000-1000-2000-4000-8000-16000-32000,ecn=1,strip=10",
+    "mac",     "4:64:0:1460:65535,6:mss,nop,ws,nop,nop,ts,sok,eol+1:df,ecn:0~rto=1000-1000-1000-1000-1000-2000-4000-8000-16000-32000,ecn=1,strip=10",
+    "ios",     "4:64:0:1460:65535,6:mss,nop,ws,nop,nop,ts,sok,eol+1:df,ecn:0~rto=60-60-60-60-60-120-230-460-920-1830-3650-3650,ecn=1,strip=10",
+    "iphone",  "4:64:0:1460:65535,6:mss,nop,ws,nop,nop,ts,sok,eol+1:df,ecn:0~rto=60-60-60-60-60-120-230-460-920-1830-3650-3650,ecn=1,strip=10",
+    "android", "4:64:0:1460:mss*44,7:mss,sok,ts,nop,ws:df,id+:0~rto=1000-2000-4000-8000-16000",
+    "linux",   "4:64:0:1460:mss*20,7:mss,sok,ts,nop,ws:df:0~rto=1000-1000-1000-1000-1000-2000-4000-8000-16000-32000",
+    NULL, NULL
+};
+
+static HevFingerprint *
+try_preset (const char *name)
+{
+    int i;
+    for (i = 0; preset_sigs[i] != NULL; i += 2) {
+        if (0 == strcasecmp (name, preset_sigs[i]))
+            return hev_p0f_parse (preset_sigs[i + 1]);
+    }
+    return NULL;
+}
+
 /* ---- Public API ---- */
 
 HevFingerprint *
 hev_p0f_parse (const char *sig)
 {
     char buf[512];
+    HevFingerprint *fp;
 
     if (!sig || !sig[0])
         return NULL;
+
+    /* "mirror" returns a marker fingerprint (ttl=-1) */
+    if (0 == strcasecmp (sig, "mirror")) {
+        fp = calloc (1, sizeof (HevFingerprint));
+        if (fp)
+            fp->ttl = -1;
+        return fp;
+    }
+
+    /* Check for preset names */
+    fp = try_preset (sig);
+    if (fp)
+        return fp;
 
     strncpy (buf, sig, sizeof (buf) - 1);
     buf[sizeof (buf) - 1] = '\0';
@@ -588,8 +631,9 @@ hev_p0f_parse_username (const char *username, unsigned int len)
     char buf[256];
     const char *p;
     int dots = 0;
+    HevFingerprint *fp;
 
-    if (!username || len < 5 || len > 250)
+    if (!username || len < 2 || len > 250)
         return NULL;
 
     if (len >= sizeof (buf))
@@ -598,7 +642,20 @@ hev_p0f_parse_username (const char *username, unsigned int len)
     memcpy (buf, username, len);
     buf[len] = '\0';
 
-    /* Try JA4T format first (starts with digits, has '_') */
+    /* Check for preset names: "win11", "macos", "ios", etc. */
+    fp = try_preset (buf);
+    if (fp)
+        return fp;
+
+    /* "mirror" returns a special marker fingerprint */
+    if (0 == strcasecmp (buf, "mirror")) {
+        fp = calloc (1, sizeof (HevFingerprint));
+        if (fp)
+            fp->ttl = -1; /* marker: ttl=-1 means mirror mode */
+        return fp;
+    }
+
+    /* Try JA4T format (starts with digits, has '_') */
     if (is_ja4t_format (buf))
         return parse_ja4t (buf);
 
@@ -617,4 +674,147 @@ hev_p0f_parse_username (const char *username, unsigned int len)
         return NULL;
 
     return parse_p0f_fields (buf);
+}
+
+/* ---- SYN packet parser for mirror mode ---- */
+
+HevFingerprint *
+hev_p0f_parse_syn (const unsigned char *data, unsigned int len)
+{
+    HevFingerprint *fp;
+    unsigned int ihl, doff, opts_len;
+    const unsigned char *tcp, *opts;
+    unsigned int i;
+    int oc = 0;
+
+    if (!data || len < 40)
+        return NULL;
+
+    if ((data[0] >> 4) != 4)
+        return NULL; /* IPv4 only for now */
+
+    fp = calloc (1, sizeof (HevFingerprint));
+    if (!fp)
+        return NULL;
+
+    ihl = (data[0] & 0xF) * 4;
+    if (ihl < 20 || ihl > len)
+        goto fail;
+
+    /* TTL: round up to nearest common initial value */
+    {
+        int ttl = data[8];
+        if (ttl > 128) fp->ttl = 255;
+        else if (ttl > 64) fp->ttl = 128;
+        else if (ttl > 32) fp->ttl = 64;
+        else fp->ttl = 32;
+        fp->ttl_guess = fp->ttl;
+        fp->flags |= HEV_FP_FLAG_TTL;
+        fp->flags2 |= HEV_FP_FLAG2_IPTTL_GUESS;
+    }
+
+    /* DF bit */
+    {
+        unsigned short frag = ntohs (*(unsigned short *)(data + 6));
+        fp->df = (frag & 0x4000) ? 1 : 0;
+        fp->flags |= HEV_FP_FLAG_DF;
+    }
+
+    /* IP ID */
+    {
+        unsigned short ipid = ntohs (*(unsigned short *)(data + 4));
+        if (fp->df && ipid != 0) {
+            fp->ip_id_behavior = HEV_FP_IPID_RANDOM;
+            fp->quirks |= HEV_FP_QUIRK_ID_PLUS;
+        } else if (fp->df) {
+            fp->ip_id_behavior = HEV_FP_IPID_ZERO;
+        }
+        fp->flags |= HEV_FP_FLAG_IP_ID;
+    }
+
+    /* IP options */
+    fp->ip_opt_len = ihl - 20;
+    if (fp->ip_opt_len > 0)
+        fp->flags |= HEV_FP_FLAG_IP_OPT_LEN;
+
+    /* TCP header */
+    tcp = data + ihl;
+    if (ihl + 20 > len)
+        goto fail;
+
+    doff = ((tcp[12] >> 4) & 0xF) * 4;
+    if (doff < 20 || ihl + doff > len)
+        goto fail;
+
+    fp->window = ntohs (*(unsigned short *)(tcp + 14));
+    fp->flags |= HEV_FP_FLAG_WINDOW;
+
+    /* ECN */
+    if (tcp[13] & 0x40) {
+        fp->ecn = 1;
+        fp->flags |= HEV_FP_FLAG_ECN;
+        fp->quirks |= HEV_FP_QUIRK_ECN;
+    }
+
+    /* TCP options */
+    opts = tcp + 20;
+    opts_len = doff - 20;
+    i = 0;
+    while (i < opts_len && oc < HEV_FP_MAX_TCP_OPTIONS) {
+        unsigned char kind = opts[i];
+        unsigned char ol;
+
+        if (kind == 0) {
+            fp->tcp_options_order[oc++] = HEV_TCP_OPT_EOL;
+            break;
+        }
+        if (kind == 1) {
+            fp->tcp_options_order[oc++] = HEV_TCP_OPT_NOP;
+            i++;
+            continue;
+        }
+        if (i + 1 >= opts_len) break;
+        ol = opts[i + 1];
+        if (ol < 2 || i + ol > opts_len) break;
+
+        fp->tcp_options_order[oc++] = kind;
+        switch (kind) {
+        case HEV_TCP_OPT_MSS:
+            if (ol >= 4) {
+                fp->mss = ntohs (*(unsigned short *)(opts + i + 2));
+                fp->flags |= HEV_FP_FLAG_MSS;
+            }
+            break;
+        case HEV_TCP_OPT_WSCALE:
+            if (ol >= 3) {
+                fp->wscale = opts[i + 2];
+                fp->flags |= HEV_FP_FLAG_WSCALE;
+            }
+            break;
+        case HEV_TCP_OPT_SACK_PERM:
+            fp->sack_perm = 1;
+            fp->flags |= HEV_FP_FLAG_SACK_PERM;
+            break;
+        case HEV_TCP_OPT_TIMESTAMPS:
+            if (ol >= 10) {
+                fp->timestamps = 1;
+                fp->flags |= HEV_FP_FLAG_TIMESTAMPS;
+                fp->ts_clock = 1000;
+                fp->flags |= HEV_FP_FLAG_TS_CLOCK;
+            }
+            break;
+        }
+        i += ol;
+    }
+    fp->tcp_options_count = oc;
+    fp->flags |= HEV_FP_FLAG_TCP_OPTS;
+
+    LOG_D ("mirror: TTL=%d WIN=%d MSS=%d WS=%d DF=%d ECN=%d opts=%d",
+           fp->ttl, fp->window, fp->mss, fp->wscale, fp->df, fp->ecn,
+           fp->tcp_options_count);
+    return fp;
+
+fail:
+    free (fp);
+    return NULL;
 }

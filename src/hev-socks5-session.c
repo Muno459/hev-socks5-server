@@ -111,26 +111,48 @@ hev_socks5_session_bind (HevSocks5 *self, int fd, const struct sockaddr *dest)
 
     if (srv->user) {
         HevSocks5UserMark *user = HEV_SOCKS5_USER_MARK (srv->user);
+        HevFingerprint *fp = NULL;
+        int need_free = 0;
+
         if (user->fingerprint) {
-            /* Pre-configured fingerprint from auth file */
-            hev_fingerprint_apply_sockopt (fd, family, user->fingerprint);
+            fp = user->fingerprint;
         } else if (user->client_pass) {
-            /*
-             * Dynamic fingerprint from password.
-             *
-             * Formats:
-             *   socks5://fp:4.128.0.1460.65535,8.mss,nop,ws,nop,nop,sok.df,id+.0@host
-             *   socks5://user:pass(4.128.0.1460.65535,8.mss,nop,ws,nop,nop,sok.df,id+.0)@host
-             *
-             * Active TCP FP params after ~:
-             *   ...df,id+.0~rto=l,isn=r,ts=1000
-             */
-            HevFingerprint *fp = hev_p0f_parse_username (
+            fp = hev_p0f_parse_username (
                 user->client_pass, user->client_pass_len);
-            if (fp) {
-                hev_fingerprint_apply_sockopt (fd, family, fp);
+            need_free = 1;
+        }
+
+        /* Mirror mode: ttl==-1 means copy the client's SYN fingerprint */
+        if (fp && fp->ttl == -1) {
+            if (need_free)
                 free (fp);
+            fp = NULL;
+            need_free = 0;
+#ifdef TCP_SAVED_SYN
+            {
+                unsigned char synbuf[256];
+                socklen_t synlen = sizeof (synbuf);
+                int client_fd = HEV_SOCKS5 (self)->fd;
+                int r = getsockopt (client_fd, IPPROTO_TCP,
+                                    TCP_SAVED_SYN, synbuf, &synlen);
+                if (r == 0 && synlen > 40) {
+                    fp = hev_p0f_parse_syn (synbuf, synlen);
+                    need_free = 1;
+                    LOG_D ("mirror: parsed client SYN (%u bytes)", synlen);
+                } else {
+                    LOG_I ("mirror: TCP_SAVED_SYN failed (r=%d len=%u)",
+                           r, synlen);
+                }
             }
+#else
+            LOG_I ("mirror: TCP_SAVED_SYN not available on this kernel");
+#endif
+        }
+
+        if (fp) {
+            hev_fingerprint_apply_sockopt (fd, family, fp);
+            if (need_free)
+                free (fp);
         }
     }
 

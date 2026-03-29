@@ -10,6 +10,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 
 #include <hev-task.h>
 #include <hev-task-io.h>
@@ -114,6 +115,11 @@ hev_socket_factory_get (HevSocketFactory *self)
         LOG_E ("socket factory listen");
         goto exit_close;
     }
+
+    /* Save SYN headers for mirror mode fingerprinting */
+#ifdef TCP_SAVE_SYN
+    setsockopt (fd, IPPROTO_TCP, TCP_SAVE_SYN, &one, sizeof (one));
+#endif
 
     return fd;
 
