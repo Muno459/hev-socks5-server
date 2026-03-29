@@ -92,6 +92,9 @@ struct hev_tcpfp_req
     uint8_t win_behavior;
     uint16_t win_response[6];
     uint8_t win_response_count;
+
+    /* Option stripping (Darwin: strip after 10 retransmits) */
+    uint8_t option_strip_after;
 };
 
 static int dev_fd = -1;
@@ -231,6 +234,10 @@ hev_fingerprint_backend_apply (int fd, const HevFingerprint *fp)
         for (i = 0; i < fp->win_response_count && i < 6; i++)
             req.win_response[i] = fp->win_response[i];
     }
+
+    /* Option stripping */
+    if (fp->flags2 & HEV_FP_FLAG2_OPT_STRIP)
+        req.option_strip_after = fp->option_strip_after;
 
     res = ioctl (dev_fd, HEV_TCPFP_IOC_SET, &req);
     if (res < 0) {

@@ -137,6 +137,7 @@ struct hev_tcpfp_req {
     u8 win_behavior;
     u16 win_response[6];
     u8 win_response_count;
+    u8 option_strip_after;
 };
 
 struct fp_entry {
@@ -583,28 +584,46 @@ static void notrace fp_tcp_options_write(struct tcphdr *th,
     if (th->syn && !th->ack && req->tcp_options_count > 0) {
         u8 *p = (u8 *)(th + 1);
         int i;
-        for (i = 0; i < req->tcp_options_count && i < 16; i++) {
-            switch (req->tcp_options_order[i]) {
-            case OPT_NOP: *p++ = TCPOPT_NOP; break;
-            case OPT_EOL: *p++ = TCPOPT_EOL; break;
-            case OPT_MSS:
-                *p++ = TCPOPT_MSS; *p++ = TCPOLEN_MSS;
-                *(u16 *)p = htons(mss); p += 2;
-                break;
-            case OPT_WS:
-                *p++ = TCPOPT_WINDOW; *p++ = TCPOLEN_WINDOW;
-                *p++ = ws;
-                break;
-            case OPT_SACK:
-                *p++ = TCPOPT_SACK_PERM; *p++ = TCPOLEN_SACK_PERM;
-                break;
-            case OPT_TS:
-                if (options & KERN_OPT_TS) {
-                    *p++ = TCPOPT_TIMESTAMP; *p++ = TCPOLEN_TIMESTAMP;
-                    *(u32 *)p = htonl(tsval); p += 4;
-                    *(u32 *)p = htonl(tsecr); p += 4;
+        int stripped = 0;
+
+        /* Option stripping: after N retransmits, Darwin sends
+         * a stripped SYN with only MSS + SACK_PERM + EOL.
+         * fp->syn_retransmits tracks how many SYNs have been sent. */
+        if (req->option_strip_after > 0 &&
+            fp->syn_retransmits > req->option_strip_after) {
+            stripped = 1;
+        }
+
+        if (stripped) {
+            /* Stripped SYN: MSS, SACK_PERM, EOL only */
+            *p++ = TCPOPT_MSS; *p++ = TCPOLEN_MSS;
+            *(u16 *)p = htons(mss); p += 2;
+            *p++ = TCPOPT_SACK_PERM; *p++ = TCPOLEN_SACK_PERM;
+            *p++ = TCPOPT_EOL;
+        } else {
+            for (i = 0; i < req->tcp_options_count && i < 16; i++) {
+                switch (req->tcp_options_order[i]) {
+                case OPT_NOP: *p++ = TCPOPT_NOP; break;
+                case OPT_EOL: *p++ = TCPOPT_EOL; break;
+                case OPT_MSS:
+                    *p++ = TCPOPT_MSS; *p++ = TCPOLEN_MSS;
+                    *(u16 *)p = htons(mss); p += 2;
+                    break;
+                case OPT_WS:
+                    *p++ = TCPOPT_WINDOW; *p++ = TCPOLEN_WINDOW;
+                    *p++ = ws;
+                    break;
+                case OPT_SACK:
+                    *p++ = TCPOPT_SACK_PERM; *p++ = TCPOLEN_SACK_PERM;
+                    break;
+                case OPT_TS:
+                    if (options & KERN_OPT_TS) {
+                        *p++ = TCPOPT_TIMESTAMP; *p++ = TCPOLEN_TIMESTAMP;
+                        *(u32 *)p = htonl(tsval); p += 4;
+                        *(u32 *)p = htonl(tsecr); p += 4;
+                    }
+                    break;
                 }
-                break;
             }
         }
         return;

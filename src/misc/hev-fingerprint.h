@@ -66,6 +66,7 @@ extern "C" {
 #define HEV_FP_FLAG2_IPTTL_GUESS   (1u << 7)
 #define HEV_FP_FLAG2_WIN_BEHAVIOR  (1u << 8)
 #define HEV_FP_FLAG2_TCP_FLAGS     (1u << 9)
+#define HEV_FP_FLAG2_OPT_STRIP    (1u << 10)
 
 #define HEV_FP_MAX_TCP_OPTIONS 16
 #define HEV_FP_MAX_IP_OPTIONS  40
@@ -194,6 +195,7 @@ struct _HevFingerprint
     int rto_values[16];        /* custom RTO sequence (ms) for RTO_CUSTOM */
     int rto_count;             /* number of entries in rto_values */
     int retransmit_count;      /* max SYN retransmits before giving up */
+    int option_strip_after;    /* strip options after N retransmits (Darwin: 10) */
 
     /* --- ISN (Initial Sequence Number) --- */
     int isn_pattern;           /* HEV_FP_ISN_* */

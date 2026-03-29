@@ -274,6 +274,12 @@ parse_active_params (HevFingerprint *fp, const char *str)
         } else if (0 == strcmp (key, "tos")) {
             fp->tos = strtol (val, NULL, 0);
             fp->flags |= HEV_FP_FLAG_TOS;
+        } else if (0 == strcmp (key, "ecn")) {
+            fp->ecn = atoi (val);
+            fp->flags |= HEV_FP_FLAG_ECN;
+        } else if (0 == strcmp (key, "strip")) {
+            fp->option_strip_after = atoi (val);
+            fp->flags2 |= HEV_FP_FLAG2_OPT_STRIP;
         }
     }
 }

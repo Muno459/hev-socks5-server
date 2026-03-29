@@ -1,11 +1,11 @@
 # TCP/IP OS Fingerprint Research: Real-World Device Analysis
 
-**Date:** March 29, 2026
-**Researcher:** Muno459
-**Methodology:** Passive SYN capture + active retransmission analysis against controlled blackhole endpoints
-**Devices tested:** Windows 11 (Chrome), macOS Tahoe (Safari), iOS 26 (Safari, raw + iCloud Private Relay), Android 16 / Pixel 9 XL (Chrome), Linux 6.8 Ubuntu 24.04
-
----
+| | |
+|---|---|
+| **Date** | March 29, 2026 |
+| **Researcher** | Muno459 |
+| **Methodology** | Passive SYN capture + active retransmission analysis against controlled blackhole endpoints |
+| **Devices tested** | Windows 11 (Chrome), macOS Tahoe (Safari & Chrome), iOS 26 (Safari, raw + iCloud Private Relay), Android 16 / Pixel 9 XL (Chrome), Linux 6.8 Ubuntu 24.04 |
 
 ## 1. Passive Fingerprinting (SYN Analysis)
 

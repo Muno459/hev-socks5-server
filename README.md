@@ -117,6 +117,8 @@ Append `~` after the p0f signature for active fingerprinting parameters:
 | `isn=` | `r` (random), `t` (time-based), `c` (constant), `i` (incremental) | Initial sequence number pattern |
 | `ts=` | `250`, `1000`, etc. | Timestamp clock rate in Hz |
 | `cc=` | `cubic`, `reno`, `bbr` | Congestion control algorithm |
+| `ecn=` | `1` (enable), `0` (disable) | ECN negotiation (ECE+CWR on SYN) |
+| `strip=` | `10` (strip after N retransmits) | Option stripping on final SYN retransmit |
 
 ### Dynamic fingerprinting via password
 
@@ -143,8 +145,11 @@ All profiles verified at **p0f distance 0** (exact match):
 | Profile | p0f Detection | Signature |
 |---------|--------------|-----------|
 | Windows 10/11 | `Windows NT kernel 5.x` | `4:128:0:1460:65535,8:mss,nop,ws,nop,nop,sok:df,id+:0` |
+| macOS / iOS | `Mac OS X` | `4:64:0:1460:65535,6:mss,nop,ws,nop,nop,ts,sok,eol+1:df,ecn:0` |
 | Linux 3.11+ | `Linux 3.11 and newer` | `4:64:0:1460:mss*20,7:mss,sok,ts,nop,ws:df:0` |
 | Windows XP | `Windows XP` | `4:128:0:1460:65535,0:mss,nop,nop,sok:df,id+:0` |
+
+For detailed fingerprint research including active TCP analysis (retransmission timing, option stripping, ECN behavior) across Windows 11, macOS Tahoe, iOS 26, Android 16, and Linux 6.8, see [docs/tcp-fingerprint-research.md](docs/tcp-fingerprint-research.md).
 
 ## Configuration
 
