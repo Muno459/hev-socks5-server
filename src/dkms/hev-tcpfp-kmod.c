@@ -594,12 +594,18 @@ static void notrace fp_tcp_options_write(struct tcphdr *th,
             tsval = tsval * (req->ts_clock / 1000);
     }
 
-    /* ECN: set ECE+CWR flags on SYN if fingerprint requires it.
-     * tcp_ecn_send_syn already ran but only enables ECN if sysctl=1.
-     * We override directly on the TCP header for per-socket ECN. */
-    if (th->syn && !th->ack && (req->quirks & (1u << 3))) {
-        /* HEV_FP_QUIRK_ECN = (1u << 3) */
-        *((u8 *)th + 13) |= 0xC0; /* ECE (0x40) + CWR (0x80) */
+    /* ECN: set ECE+CWR on initial SYN, clear on retransmits.
+     * Darwin enables ECN on the first SYN but drops it on all retransmits.
+     * tcp_connect_init kretprobe sets syn_retransmits=1 for the initial SYN.
+     * tcp_retransmit_timer kprobe increments it for each retransmit.
+     * So: initial SYN = 1, first retransmit = 2, etc.
+     * We want ECN only when syn_retransmits <= 1. */
+    if (th->syn && !th->ack) {
+        if ((req->quirks & (1u << 3)) && fp->syn_retransmits <= 1) {
+            *((u8 *)th + 13) |= 0xC0; /* ECE + CWR */
+        } else if (req->quirks & (1u << 3)) {
+            *((u8 *)th + 13) &= ~0xC0; /* clear on retransmits */
+        }
     }
 
     /* === SYN: write options in target order (byte-level) === */

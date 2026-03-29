@@ -279,11 +279,24 @@ hev_fingerprint_apply_sockopt (int fd, int family, const HevFingerprint *fp)
     }
 #endif
 
-    /* RTO: TCP_USER_TIMEOUT controls how long to wait for ACK */
+    /* RTO: TCP_USER_TIMEOUT controls how long to wait for ACK.
+     * Must cover the entire retransmit pattern duration. */
 #ifdef TCP_USER_TIMEOUT
     if (fp->flags2 & HEV_FP_FLAG2_RTO) {
-        int timeout_ms = fp->rto_initial_ms > 0 ? fp->rto_initial_ms * 6 :
-                         18000; /* default ~18s total */
+        int timeout_ms = 0;
+        if (fp->rto_count > 0) {
+            /* Sum all custom RTO values to get total duration */
+            int i;
+            for (i = 0; i < fp->rto_count; i++)
+                timeout_ms += fp->rto_values[i];
+            timeout_ms += timeout_ms / 4; /* 25% margin */
+        } else if (fp->rto_initial_ms > 0) {
+            timeout_ms = fp->rto_initial_ms * 60; /* generous for preset */
+        } else {
+            timeout_ms = 120000; /* 2 min default */
+        }
+        if (timeout_ms < 10000)
+            timeout_ms = 10000; /* minimum 10s */
         try_setsockopt (fd, IPPROTO_TCP, TCP_USER_TIMEOUT,
                         &timeout_ms, sizeof (timeout_ms), "user_timeout");
     }
