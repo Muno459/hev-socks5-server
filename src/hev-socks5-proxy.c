@@ -485,7 +485,9 @@ hev_socks5_proxy_load_file_yaml (HevSocks5Authenticator *auth,
                     mark = strtoul (val, NULL, 0);
                 else if (0 == strcmp (key, "iface"))
                     iface = (char *)val;
-                else if (0 == strcmp (key, "p0f") && !fp)
+                else if ((0 == strcmp (key, "p0f") ||
+                          0 == strcmp (key, "ja4t") ||
+                          0 == strcmp (key, "preset")) && !fp)
                     fp = hev_p0f_parse (val);
             }
 
@@ -563,7 +565,9 @@ hev_socks5_proxy_load_file_yaml (HevSocks5Authenticator *auth,
                             mark = strtoul (mval, NULL, 0);
                         else if (0 == strcmp (mkey, "iface"))
                             iface = (char *)mval;
-                        else if (0 == strcmp (mkey, "p0f") && !fp)
+                        else if ((0 == strcmp (mkey, "p0f") ||
+                                  0 == strcmp (mkey, "ja4t") ||
+                                  0 == strcmp (mkey, "preset")) && !fp)
                             fp = hev_p0f_parse (mval);
                     }
                     if (username && password) {

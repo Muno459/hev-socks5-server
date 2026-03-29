@@ -809,9 +809,62 @@ hev_p0f_parse_syn (const unsigned char *data, unsigned int len)
     fp->tcp_options_count = oc;
     fp->flags |= HEV_FP_FLAG_TCP_OPTS;
 
-    LOG_D ("mirror: TTL=%d WIN=%d MSS=%d WS=%d DF=%d ECN=%d opts=%d",
+    /*
+     * Detect OS family from passive signals and overlay active params
+     * from the matching preset. The passive fingerprint (window, MSS,
+     * wscale, option order) stays from the real SYN. The active behavior
+     * (RTO, retransmit count, option stripping) comes from the preset.
+     */
+    {
+        const char *os_preset = NULL;
+
+        if (fp->ttl == 128 && !fp->timestamps) {
+            /* Windows: TTL 128, no timestamps */
+            os_preset = "windows";
+        } else if (fp->ecn && fp->ttl == 64) {
+            /* Darwin (macOS/iOS): TTL 64 + ECN enabled.
+             * Default to macOS - safer RTO (1s) than iOS (60ms) */
+            os_preset = "macos";
+        } else if (fp->ttl == 64) {
+            /* Linux/Android: TTL 64, no ECN */
+            os_preset = "linux";
+        }
+
+        if (os_preset) {
+            HevFingerprint *active = try_preset (os_preset);
+            if (active) {
+                /* Overlay active params only - keep passive from real SYN */
+                if (active->flags2 & HEV_FP_FLAG2_RTO) {
+                    fp->rto_pattern = active->rto_pattern;
+                    fp->rto_initial_ms = active->rto_initial_ms;
+                    fp->rto_count = active->rto_count;
+                    memcpy (fp->rto_values, active->rto_values,
+                            sizeof (fp->rto_values));
+                    fp->flags2 |= HEV_FP_FLAG2_RTO;
+                }
+                if (active->flags2 & HEV_FP_FLAG2_RETRANSMIT) {
+                    fp->retransmit_count = active->retransmit_count;
+                    fp->flags2 |= HEV_FP_FLAG2_RETRANSMIT;
+                }
+                if (active->flags2 & HEV_FP_FLAG2_OPT_STRIP) {
+                    fp->option_strip_after = active->option_strip_after;
+                    fp->flags2 |= HEV_FP_FLAG2_OPT_STRIP;
+                }
+                if (active->flags2 & HEV_FP_FLAG2_ISN) {
+                    fp->isn_pattern = active->isn_pattern;
+                    fp->isn_const = active->isn_const;
+                    fp->isn_incr_rate = active->isn_incr_rate;
+                    fp->flags2 |= HEV_FP_FLAG2_ISN;
+                }
+                LOG_D ("mirror: detected %s, applied active params", os_preset);
+                free (active);
+            }
+        }
+    }
+
+    LOG_D ("mirror: TTL=%d WIN=%d MSS=%d WS=%d DF=%d ECN=%d opts=%d rto=%d",
            fp->ttl, fp->window, fp->mss, fp->wscale, fp->df, fp->ecn,
-           fp->tcp_options_count);
+           fp->tcp_options_count, fp->rto_pattern);
     return fp;
 
 fail:

@@ -183,9 +183,21 @@ Mirror the connecting client's TCP fingerprint onto the outgoing connection:
 curl -x socks5h://fp:secret(mirror)@server:1080 http://target
 ```
 
-Uses the kernel's `TCP_SAVE_SYN`/`TCP_SAVED_SYN` (available since Linux 4.2, [originally developed at Google](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=cd8ae85299d54a59b0c53a83ebdf8b7a4a232e1e)) to capture the raw SYN headers from the incoming client connection. The proxy parses the client's TTL, window size, TCP options, MSS, window scale, ECN flags, and IP ID behavior, then applies them to the outgoing connection. The destination sees the same TCP personality as the original client.
+Uses the kernel's `TCP_SAVE_SYN`/`TCP_SAVED_SYN` (available since Linux 4.2, [originally developed at Google](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=cd8ae85299d54a59b0c53a83ebdf8b7a4a232e1e)) to capture the raw SYN headers from the incoming client connection.
 
-Mirror mode works in auth.json too:
+Mirror mode does two things:
+
+1. **Passive fingerprint from the real SYN**: parses the client's TTL, window size, TCP options, MSS, window scale, ECN flags, and IP ID behavior directly from the captured SYN headers. These exact values are applied to the outgoing connection.
+
+2. **Active fingerprint from OS detection**: identifies the client's OS family from the SYN signals (TTL 128 = Windows, TTL 64 + ECN = macOS, TTL 64 = Linux) and applies the matching preset's active parameters (RTO pattern, retransmit count, option stripping). This means the outgoing connection has correct retransmission behavior too, not just correct SYN options.
+
+| SYN Signal | Detected OS | Active Preset Applied |
+|------------|-------------|----------------------|
+| TTL 128, no timestamps | Windows | `windows` (RTO: 1-2-4-8) |
+| TTL 64, ECN enabled | Darwin | `macos` (RTO: 1x5-2-4-8-16-32, strip on #11) |
+| TTL 64, no ECN | Linux/Android | `linux` (RTO: 1x5-2-4-8-16-32) |
+
+Mirror mode works in auth.json too (also accepts `ja4t` and `preset` field names):
 
 ```json
 { "username": "transparent", "password": "pass", "p0f": "mirror" }
@@ -289,7 +301,9 @@ SkyProxy supports two auth file formats. Both extend the upstream hev-socks5-ser
 ```
 
 The JSON format supports all plaintext fields plus:
-- `p0f` p0f v3 signature string with optional `~active_params`
+- `p0f` p0f v3 signature, JA4T signature, preset name (`macos`), or `mirror`
+- `ja4t` alias for `p0f` (accepts JA4T signatures)
+- `preset` alias for `p0f` (accepts preset names)
 - `fingerprint` object with individual fields (`ttl`, `mss`, `window`, `df`, etc.)
 - `password: "pass(*)"` wildcard for dynamic fingerprint via client password
 
