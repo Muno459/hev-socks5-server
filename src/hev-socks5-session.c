@@ -151,6 +151,20 @@ hev_socks5_session_bind (HevSocks5 *self, int fd, const struct sockaddr *dest)
 
         if (fp) {
             hev_fingerprint_apply_sockopt (fd, family, fp);
+
+            /* Override connect timeout to cover the full RTO pattern.
+             * The core library checks: if binder set a longer timeout,
+             * keep it instead of the global connect-timeout. */
+            if (fp->flags2 & HEV_FP_FLAG2_RTO && fp->rto_count > 0) {
+                int total_ms = 0, k;
+                for (k = 0; k < fp->rto_count; k++)
+                    total_ms += fp->rto_values[k];
+                total_ms += total_ms / 4; /* 25% margin */
+                if (total_ms < 10000)
+                    total_ms = 10000;
+                hev_socks5_set_timeout (self, total_ms);
+            }
+
             if (need_free)
                 free (fp);
         }
