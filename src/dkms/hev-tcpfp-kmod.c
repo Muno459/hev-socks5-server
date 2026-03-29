@@ -774,8 +774,57 @@ static struct kprobe kp_retransmit = {
     .pre_handler = kp_retransmit_pre,
 };
 
+/* --- kprobe: ip_local_out --- Native IP ID override
+ *
+ * ip_local_out(net, sk, skb) is the last function called before
+ * the packet enters netfilter LOCAL_OUT and then the device.
+ * At this point the IP header is fully built including iph->id.
+ * The kernel zeros IP ID when DF is set (ip_select_ident_segs).
+ * We override it here for Windows-style id+ (non-zero with DF).
+ *
+ * x86_64: rdi=net, rsi=sk, rdx=skb
+ */
+static int kp_ip_local_out_pre(struct kprobe *p, struct pt_regs *regs)
+{
+    struct sock *sk = (struct sock *)regs->si;
+    struct sk_buff *skb = (struct sk_buff *)regs->dx;
+    struct iphdr *iph;
+    struct fp_entry *fp;
+    u64 cookie;
+
+    if (!sk || !skb) return 0;
+    cookie = atomic64_read(&sk->sk_cookie);
+    if (!cookie) return 0;
+
+    rcu_read_lock();
+    fp = fp_find(cookie);
+    rcu_read_unlock();
+    if (!fp) return 0;
+
+    iph = ip_hdr(skb);
+    if (!iph || iph->protocol != IPPROTO_TCP) return 0;
+
+    /* Override IP ID for fingerprinted sockets */
+    if (fp->req.ip_id_behavior == IPID_RANDOM) {
+        iph->id = htons(get_random_u16());
+        iph->check = 0;
+        iph->check = ip_fast_csum((unsigned char *)iph, iph->ihl);
+    } else if (fp->req.ip_id_behavior == IPID_ZERO && iph->id != 0) {
+        iph->id = 0;
+        iph->check = 0;
+        iph->check = ip_fast_csum((unsigned char *)iph, iph->ihl);
+    }
+
+    return 0;
+}
+
+static struct kprobe kp_ip_local_out = {
+    .symbol_name = "ip_local_out",
+    .pre_handler = kp_ip_local_out_pre,
+};
+
 /* ================================================================
- * NETFILTER — IP-layer modifications ONLY (no TCP header changes)
+ * NETFILTER — RST/FIN behavior only (IP ID now handled natively)
  * ================================================================ */
 
 static unsigned int
@@ -801,14 +850,7 @@ nf_out_v4(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
     rcu_read_unlock();
     if (!fp) return NF_ACCEPT;
 
-    /* IP ID behavior */
-    if (fp->req.ip_id_behavior == IPID_RANDOM) {
-        iph->id = htons(get_random_u16());
-        modified = 1;
-    } else if (fp->req.ip_id_behavior == IPID_ZERO) {
-        iph->id = 0;
-        modified = 1;
-    }
+    /* IP ID now handled natively via kprobe on ip_local_out */
 
     /* Need TCP header for RST/FIN/ACK checks */
     if (skb_ensure_writable(skb, skb_transport_offset(skb) +
@@ -1005,6 +1047,10 @@ static int __init hev_tcpfp_init(void)
     if (ret < 0)
         pr_warn("hev-tcpfp: kprobe tcp_retransmit_timer failed (%d)\n", ret);
 
+    ret = register_kprobe(&kp_ip_local_out);
+    if (ret < 0)
+        pr_warn("hev-tcpfp: kprobe ip_local_out failed (%d)\n", ret);
+
     hash_init(fp_table);
     isn_time_last_jiffies = jiffies;
     isn_time_counter = get_random_u32();
@@ -1019,6 +1065,7 @@ static void __exit hev_tcpfp_exit(void)
     struct hlist_node *tmp;
     int bkt, i;
 
+    unregister_kprobe(&kp_ip_local_out);
     unregister_kprobe(&kp_retransmit);
     if (ftrace_opts_target_addr) {
         unregister_ftrace_function(&ftrace_opts_ops);
