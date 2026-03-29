@@ -594,6 +594,14 @@ static void notrace fp_tcp_options_write(struct tcphdr *th,
             tsval = tsval * (req->ts_clock / 1000);
     }
 
+    /* ECN: set ECE+CWR flags on SYN if fingerprint requires it.
+     * tcp_ecn_send_syn already ran but only enables ECN if sysctl=1.
+     * We override directly on the TCP header for per-socket ECN. */
+    if (th->syn && !th->ack && (req->quirks & (1u << 3))) {
+        /* HEV_FP_QUIRK_ECN = (1u << 3) */
+        *((u8 *)th + 13) |= 0xC0; /* ECE (0x40) + CWR (0x80) */
+    }
+
     /* === SYN: write options in target order (byte-level) === */
     if (th->syn && !th->ack && req->tcp_options_count > 0) {
         u8 *p = (u8 *)(th + 1);
