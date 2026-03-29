@@ -43,9 +43,6 @@
 #include <linux/random.h>
 #include <linux/jiffies.h>
 #include <linux/ftrace.h>
-#include <linux/netfilter.h>
-#include <linux/netfilter_ipv4.h>
-#include <linux/netfilter_ipv6.h>
 #include <net/tcp.h>
 #include <net/sock.h>
 #include <net/checksum.h>
@@ -804,15 +801,54 @@ static int kp_ip_local_out_pre(struct kprobe *p, struct pt_regs *regs)
     iph = ip_hdr(skb);
     if (!iph || iph->protocol != IPPROTO_TCP) return 0;
 
-    /* Override IP ID for fingerprinted sockets */
-    if (fp->req.ip_id_behavior == IPID_RANDOM) {
-        iph->id = htons(get_random_u16());
-        iph->check = 0;
-        iph->check = ip_fast_csum((unsigned char *)iph, iph->ihl);
-    } else if (fp->req.ip_id_behavior == IPID_ZERO && iph->id != 0) {
-        iph->id = 0;
-        iph->check = 0;
-        iph->check = ip_fast_csum((unsigned char *)iph, iph->ihl);
+    {
+        struct tcphdr *th;
+        int modified = 0;
+        unsigned int ip_hdr_len = iph->ihl * 4;
+
+        /* IP ID */
+        if (fp->req.ip_id_behavior == IPID_RANDOM) {
+            iph->id = htons(get_random_u16());
+            modified = 1;
+        } else if (fp->req.ip_id_behavior == IPID_ZERO && iph->id != 0) {
+            iph->id = 0;
+            modified = 1;
+        }
+
+        /* RST/FIN/ACK DF + RST TTL/window */
+        if (skb->len >= ip_hdr_len + sizeof(struct tcphdr)) {
+            th = (struct tcphdr *)((u8 *)iph + ip_hdr_len);
+
+            if (th->rst) {
+                if (fp->req.rst_df) {
+                    iph->frag_off |= htons(IP_DF);
+                    modified = 1;
+                }
+                if (fp->req.rst_ttl) {
+                    iph->ttl = fp->req.rst_ttl;
+                    modified = 1;
+                }
+                if (fp->req.rst_window) {
+                    th->window = htons(fp->req.rst_window);
+                    /* TCP checksum will be computed by the kernel after us */
+                }
+            }
+
+            if (th->fin && fp->req.fin_df) {
+                iph->frag_off |= htons(IP_DF);
+                modified = 1;
+            }
+
+            if (th->ack && !th->syn && !th->fin && !th->rst && fp->req.ack_df) {
+                iph->frag_off |= htons(IP_DF);
+                modified = 1;
+            }
+        }
+
+        if (modified) {
+            iph->check = 0;
+            iph->check = ip_fast_csum((unsigned char *)iph, iph->ihl);
+        }
     }
 
     return 0;
@@ -823,156 +859,13 @@ static struct kprobe kp_ip_local_out = {
     .pre_handler = kp_ip_local_out_pre,
 };
 
-/* ================================================================
- * NETFILTER — RST/FIN behavior only (IP ID now handled natively)
- * ================================================================ */
-
-static unsigned int
-nf_out_v4(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
-{
-    struct iphdr *iph;
-    struct tcphdr *th;
-    struct sock *sk;
-    struct fp_entry *fp;
-    u64 cookie;
-    int modified = 0;
-
-    if (!skb) return NF_ACCEPT;
-    iph = ip_hdr(skb);
-    if (!iph || iph->protocol != IPPROTO_TCP) return NF_ACCEPT;
-    sk = skb->sk;
-    if (!sk) return NF_ACCEPT;
-    cookie = atomic64_read(&sk->sk_cookie);
-    if (!cookie) return NF_ACCEPT;
-
-    rcu_read_lock();
-    fp = fp_find(cookie);
-    rcu_read_unlock();
-    if (!fp) return NF_ACCEPT;
-
-    /* IP ID now handled natively via kprobe on ip_local_out */
-
-    /* Need TCP header for RST/FIN/ACK checks */
-    if (skb_ensure_writable(skb, skb_transport_offset(skb) +
-                            sizeof(struct tcphdr)))
-        return NF_ACCEPT;
-    iph = ip_hdr(skb);
-    th = tcp_hdr(skb);
-    if (!th) return NF_ACCEPT;
-
-    /* RST behavior */
-    if (th->rst) {
-        if (fp->req.rst_df) {
-            iph->frag_off |= htons(IP_DF);
-            modified = 1;
-        }
-        if (fp->req.rst_window)
-            th->window = htons(fp->req.rst_window);
-        if (fp->req.rst_ttl) {
-            iph->ttl = fp->req.rst_ttl;
-            modified = 1;
-        }
-    }
-
-    /* FIN DF */
-    if (th->fin && fp->req.fin_df) {
-        iph->frag_off |= htons(IP_DF);
-        modified = 1;
-    }
-
-    /* ACK DF */
-    if (th->ack && !th->syn && !th->fin && !th->rst && fp->req.ack_df) {
-        iph->frag_off |= htons(IP_DF);
-        modified = 1;
-    }
-
-    /* Only recalculate IP header checksum if we modified IP fields.
-     * TCP checksum is NOT recalculated — we don't modify TCP headers here.
-     * TCP option reordering + TS scaling happen in the tcp_options_write
-     * kretprobe, BEFORE the kernel computes the TCP checksum. */
-    if (modified) {
-        iph->check = 0;
-        iph->check = ip_fast_csum((unsigned char *)iph, iph->ihl);
-    }
-
-    /* RST window is a TCP field — recalc TCP checksum only if modified */
-    if (th->rst && fp->req.rst_window) {
-        int tcp_len = ntohs(iph->tot_len) - (iph->ihl * 4);
-        th->check = 0;
-        th->check = csum_tcpudp_magic(iph->saddr, iph->daddr,
-                                       tcp_len, IPPROTO_TCP,
-                                       csum_partial((u8 *)th, tcp_len, 0));
-        skb->ip_summed = CHECKSUM_NONE;
-    }
-
-    return NF_ACCEPT;
-}
-
-static unsigned int
-nf_out_v6(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
-{
-    struct ipv6hdr *ip6h;
-    struct tcphdr *th;
-    struct sock *sk;
-    struct fp_entry *fp;
-    u64 cookie;
-
-    if (!skb) return NF_ACCEPT;
-    ip6h = ipv6_hdr(skb);
-    if (!ip6h || ip6h->nexthdr != IPPROTO_TCP) return NF_ACCEPT;
-    sk = skb->sk;
-    if (!sk) return NF_ACCEPT;
-    cookie = atomic64_read(&sk->sk_cookie);
-    if (!cookie) return NF_ACCEPT;
-
-    rcu_read_lock();
-    fp = fp_find(cookie);
-    rcu_read_unlock();
-    if (!fp) return NF_ACCEPT;
-
-    if (skb_ensure_writable(skb, skb_transport_offset(skb) +
-                            sizeof(struct tcphdr)))
-        return NF_ACCEPT;
-    ip6h = ipv6_hdr(skb);
-    th = tcp_hdr(skb);
-    if (!th) return NF_ACCEPT;
-
-    /* IPv6 flow label */
-    if (fp->req.flow_label) {
-        ip6h->flow_lbl[0] = (ip6h->flow_lbl[0] & 0xF0) |
-                             ((fp->req.flow_label >> 16) & 0x0F);
-    }
-
-    /* RST */
-    if (th->rst) {
-        if (fp->req.rst_window) {
-            th->window = htons(fp->req.rst_window);
-            int tcp_len = ntohs(ip6h->payload_len);
-            th->check = 0;
-            th->check = csum_ipv6_magic(&ip6h->saddr, &ip6h->daddr,
-                                         tcp_len, IPPROTO_TCP,
-                                         csum_partial((u8 *)th, tcp_len, 0));
-            skb->ip_summed = CHECKSUM_NONE;
-        }
-        if (fp->req.rst_ttl)
-            ip6h->hop_limit = fp->req.rst_ttl;
-    }
-
-    return NF_ACCEPT;
-}
-
-static struct nf_hook_ops nf_hooks[] = {
-    { .hook = nf_out_v4, .pf = NFPROTO_IPV4,
-      .hooknum = NF_INET_LOCAL_OUT, .priority = NF_IP_PRI_LAST },
-    { .hook = nf_out_v6, .pf = NFPROTO_IPV6,
-      .hooknum = NF_INET_LOCAL_OUT, .priority = NF_IP6_PRI_LAST },
-};
+/* No netfilter hooks. Everything handled natively via kprobes + ftrace. */
 
 /* --- init/exit --- */
 
 static int __init hev_tcpfp_init(void)
 {
-    int ret, i;
+    int ret;
 
     ret = alloc_chrdev_region(&dev_num, 0, 1, DEVICE_NAME);
     if (ret < 0) return ret;
@@ -992,21 +885,7 @@ static int __init hev_tcpfp_init(void)
     }
     device_create(dev_class, NULL, dev_num, NULL, DEVICE_NAME);
 
-    for (i = 0; i < ARRAY_SIZE(nf_hooks); i++) {
-        ret = nf_register_net_hook(&init_net, &nf_hooks[i]);
-        if (ret < 0) {
-            pr_err("hev-tcpfp: hook %d failed\n", i);
-            while (--i >= 0)
-                nf_unregister_net_hook(&init_net, &nf_hooks[i]);
-            device_destroy(dev_class, dev_num);
-            cdev_del(&dev_cdev);
-            class_destroy(dev_class);
-            unregister_chrdev_region(dev_num, 1);
-            return ret;
-        }
-    }
-
-    /* Native kprobes */
+    /* Native kprobes + ftrace (no netfilter) */
     ret = register_kprobe(&kp_tcp_connect);
     if (ret < 0)
         pr_warn("hev-tcpfp: kprobe tcp_connect failed (%d)\n", ret);
@@ -1063,7 +942,7 @@ static void __exit hev_tcpfp_exit(void)
 {
     struct fp_entry *e;
     struct hlist_node *tmp;
-    int bkt, i;
+    int bkt;
 
     unregister_kprobe(&kp_ip_local_out);
     unregister_kprobe(&kp_retransmit);
@@ -1074,9 +953,6 @@ static void __exit hev_tcpfp_exit(void)
     unregister_kretprobe(&krp_syn_options);
     unregister_kretprobe(&krp_connect_init);
     unregister_kprobe(&kp_tcp_connect);
-
-    for (i = 0; i < ARRAY_SIZE(nf_hooks); i++)
-        nf_unregister_net_hook(&init_net, &nf_hooks[i]);
 
     spin_lock(&fp_lock);
     hash_for_each_safe(fp_table, bkt, tmp, e, node) {
