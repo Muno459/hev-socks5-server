@@ -504,8 +504,9 @@ hev_socks5_proxy_load_file_yaml (HevSocks5Authenticator *auth,
                     user->iface = strdup (iface);
                 user->fingerprint = fp;
                 if (hev_socks5_authenticator_add (auth,
-                                                  HEV_SOCKS5_USER (user)) < 0)
+                                                  HEV_SOCKS5_USER (user)) < 0) {
                     hev_object_unref (HEV_OBJECT (user));
+                }
             } else {
                 free (fp);
             }

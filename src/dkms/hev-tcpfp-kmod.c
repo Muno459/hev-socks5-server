@@ -492,19 +492,33 @@ static int krp_syn_options_ret(struct kretprobe_instance *ri,
     if (req->ts_initial > 0 && ((*options_p) & KERN_OPT_TS))
         *tsval_p = req->ts_initial;
 
-    /* Recompute exact size that tcp_options_write will emit. */
+    /* Recompute exact size based on what our byte-level writer emits.
+     * If we have a custom option order, count actual byte sizes.
+     * If no custom order, use kernel-style 32-bit aligned sizes. */
     new_size = 0;
-    {
-        u16 final_opts = *options_p;
-        if (*mss_p)
-            new_size += 4;  /* TCPOLEN_MSS_ALIGNED */
-        if (final_opts & KERN_OPT_TS)
-            new_size += 12; /* TCPOLEN_TSTAMP_ALIGNED (SACK combined if both) */
-        if ((final_opts & KERN_OPT_SACK_ADVERTISE) &&
-            !(final_opts & KERN_OPT_TS))
-            new_size += 4;  /* TCPOLEN_SACKPERM_ALIGNED (standalone) */
-        if (final_opts & KERN_OPT_WSCALE)
-            new_size += 4;  /* TCPOLEN_WSCALE_ALIGNED */
+    if (req->tcp_options_count > 0) {
+        int k;
+        for (k = 0; k < req->tcp_options_count; k++) {
+            switch (req->tcp_options_order[k]) {
+            case OPT_NOP: case OPT_EOL: new_size += 1; break;
+            case OPT_MSS:  new_size += 4; break;  /* kind+len+val16 */
+            case OPT_WS:   new_size += 3; break;  /* kind+len+val8 */
+            case OPT_SACK: new_size += 2; break;  /* kind+len */
+            case OPT_TS:
+                if (*options_p & KERN_OPT_TS)
+                    new_size += 10; /* kind+len+tsval+tsecr */
+                break;
+            }
+        }
+        new_size = (new_size + 3) & ~3; /* pad to 32-bit boundary */
+    } else {
+        /* No custom order: kernel writes with 32-bit aligned padding */
+        u16 f = *options_p;
+        if (*(u16 *)(opts + 2)) new_size += 4;  /* MSS */
+        if (f & KERN_OPT_TS) new_size += 12;    /* TS+NOP padding */
+        if ((f & KERN_OPT_SACK_ADVERTISE) && !(f & KERN_OPT_TS))
+            new_size += 4;
+        if (f & KERN_OPT_WSCALE) new_size += 4;
     }
     regs->ax = new_size;
 

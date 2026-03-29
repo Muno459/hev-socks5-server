@@ -525,33 +525,6 @@ parse_ja4t (char *buf)
     return fp;
 }
 
-/*
- * Detect format: JA4T uses '_' separator, p0f uses ':' or '.'
- */
-static int
-is_ja4t_format (const char *sig)
-{
-    /* JA4T starts with a number (window size) and contains '_' */
-    if (!sig || !sig[0])
-        return 0;
-    if (sig[0] < '0' || sig[0] > '9')
-        return 0;
-    if (!strchr (sig, '_'))
-        return 0;
-    /* p0f starts with version (4 or 6) then ':' or '.'
-     * JA4T window sizes are > 6, so if first field > 9 it's JA4T */
-    char first[16];
-    const char *us = strchr (sig, '_');
-    int flen = us - sig;
-    if (flen <= 0 || flen > 15)
-        return 0;
-    memcpy (first, sig, flen);
-    first[flen] = '\0';
-    int val = atoi (first);
-    /* p0f version is 4 or 6. JA4T window is typically > 100 */
-    return val > 6;
-}
-
 /* ---- Presets ---- */
 
 static const char *preset_sigs[] = {
@@ -591,7 +564,30 @@ hev_p0f_parse (const char *sig)
     if (!sig || !sig[0])
         return NULL;
 
-    /* "mirror" returns a marker fingerprint (ttl=-1) */
+    /* Fast path: first char determines format.
+     * Digit → p0f (starts with ver 4/6) or JA4T (starts with window size)
+     * Letter → preset name or "mirror"
+     * This avoids looping preset names for every p0f/JA4T string. */
+
+    if (sig[0] >= '0' && sig[0] <= '9') {
+        /* Numeric: p0f or JA4T */
+        strncpy (buf, sig, sizeof (buf) - 1);
+        buf[sizeof (buf) - 1] = '\0';
+
+        if (strchr (buf, '_'))
+            return parse_ja4t (buf);
+
+        return parse_p0f_fields (buf);
+    }
+
+    /* Alphabetic: preset name or "mirror" */
+    if (sig[0] == '*') {
+        /* p0f wildcard version "*:64:0:..." */
+        strncpy (buf, sig, sizeof (buf) - 1);
+        buf[sizeof (buf) - 1] = '\0';
+        return parse_p0f_fields (buf);
+    }
+
     if (0 == strcasecmp (sig, "mirror")) {
         fp = calloc (1, sizeof (HevFingerprint));
         if (fp)
@@ -599,18 +595,7 @@ hev_p0f_parse (const char *sig)
         return fp;
     }
 
-    /* Check for preset names */
-    fp = try_preset (sig);
-    if (fp)
-        return fp;
-
-    strncpy (buf, sig, sizeof (buf) - 1);
-    buf[sizeof (buf) - 1] = '\0';
-
-    if (is_ja4t_format (buf))
-        return parse_ja4t (buf);
-
-    return parse_p0f_fields (buf);
+    return try_preset (sig);
 }
 
 /*
@@ -629,51 +614,17 @@ HevFingerprint *
 hev_p0f_parse_username (const char *username, unsigned int len)
 {
     char buf[256];
-    const char *p;
-    int dots = 0;
-    HevFingerprint *fp;
 
     if (!username || len < 2 || len > 250)
         return NULL;
-
     if (len >= sizeof (buf))
         return NULL;
 
     memcpy (buf, username, len);
     buf[len] = '\0';
 
-    /* Check for preset names: "win11", "macos", "ios", etc. */
-    fp = try_preset (buf);
-    if (fp)
-        return fp;
-
-    /* "mirror" returns a special marker fingerprint */
-    if (0 == strcasecmp (buf, "mirror")) {
-        fp = calloc (1, sizeof (HevFingerprint));
-        if (fp)
-            fp->ttl = -1; /* marker: ttl=-1 means mirror mode */
-        return fp;
-    }
-
-    /* Try JA4T format (starts with digits, has '_') */
-    if (is_ja4t_format (buf))
-        return parse_ja4t (buf);
-
-    /* p0f format: must start with "4." or "6." or "*." */
-    if (username[1] != '.')
-        return NULL;
-    if (username[0] != '4' && username[0] != '6' && username[0] != '*')
-        return NULL;
-
-    /* Count dots before '~' - need exactly 7 for 8 fields */
-    for (p = username; p < username + len && *p != '~'; p++) {
-        if (*p == '.')
-            dots++;
-    }
-    if (dots != 7)
-        return NULL;
-
-    return parse_p0f_fields (buf);
+    /* Use the unified parser - handles all formats */
+    return hev_p0f_parse (buf);
 }
 
 /* ---- SYN packet parser for mirror mode ---- */
