@@ -11,6 +11,7 @@
 #define __HEV_SOCKS5_USER_MARK_H__
 
 #include "hev-socks5-user.h"
+#include "hev-fingerprint.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -28,7 +29,11 @@ struct _HevSocks5UserMark
     HevSocks5User base;
 
     unsigned int mark;
+    int wildcard;
+    char *client_pass;         /* stores client-provided password for dynamic FP */
+    unsigned int client_pass_len;
     char *iface;
+    HevFingerprint *fingerprint;
 };
 
 struct _HevSocks5UserMarkClass

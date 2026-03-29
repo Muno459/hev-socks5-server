@@ -1,0 +1,3 @@
+obj-m += hev-tcpfp.o
+hev-tcpfp-objs := hev-tcpfp-kmod.o
+ccflags-y := -DDEBUG

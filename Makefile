@@ -9,6 +9,7 @@ STRIP=$(CROSS_PREFIX)strip
 CCFLAGS=-O3 -pipe -Wall -Werror $(CFLAGS) \
 		-I$(SRCDIR)/misc \
 		-I$(SRCDIR)/core/include  \
+		-I$(SRCDIR)/dkms \
 		-I$(THIRDPARTDIR)/yaml/src \
 		-I$(THIRDPARTDIR)/hev-task-system/include
 LDFLAGS=-L$(THIRDPARTDIR)/yaml/bin -lyaml \
@@ -60,6 +61,11 @@ ifeq ($(ENABLE_STATIC),1)
 	CCFLAGS+=-static
 endif
 
+# DKMS is auto-enabled by build.mk if kernel headers exist
+ifeq ($(ENABLE_DKMS),1)
+	CCFLAGS+=-DENABLE_DKMS
+endif
+
 LDFLAGS+=-lpthread $(LFLAGS)
 
 V :=
@@ -68,7 +74,19 @@ ifeq ($(V),1)
 	undefine ECHO_PREFIX
 endif
 
-.PHONY: exec static shared clean install uninstall tp-static tp-shared tp-clean
+.PHONY: all exec static shared clean install uninstall tp-static tp-shared tp-clean dkms dkms-install dkms-uninstall setup kmod-load kmod-unload
+
+# Default target — builds binary + kernel module + loads module
+all : exec dkms kmod-load
+	@echo ""
+	@echo "  \e[1;32mReady!\e[0m Run: ./bin/hev-socks5-server conf/main.yml"
+	@echo ""
+
+# Full setup with system install
+setup : all install
+	@echo ""
+	@echo "  \e[1;32mInstalled!\e[0m Run: hev-socks5-server /usr/local/etc/hev-socks5-server.yml"
+	@echo ""
 
 exec : $(EXEC_TARGET)
 
@@ -85,11 +103,44 @@ tp-shared : $(THIRDPARTS)
 tp-clean : $(THIRDPARTS)
 	@$(foreach dir,$^,$(MAKE) --no-print-directory -C $(dir) clean;)
 
+kmod-load : dkms
+ifeq ($(ENABLE_DKMS),1)
+	@rmmod hev-tcpfp 2>/dev/null || true
+	@insmod $(SRCDIR)/dkms/hev-tcpfp.ko && echo "  \e[1;32mKernel module loaded\e[0m" || echo "  \e[33mModule load failed (need root)\e[0m"
+else
+	@true
+endif
+
+kmod-unload :
+	rmmod hev-tcpfp 2>/dev/null || true
+	@echo "  Module unloaded"
+
+dkms :
+ifeq ($(ENABLE_DKMS),1)
+	$(ECHO_PREFIX) $(MAKE) -C /lib/modules/$$(uname -r)/build M=$(CURDIR)/$(SRCDIR)/dkms modules
+	@printf $(LINKMSG) $(SRCDIR)/dkms/hev-tcpfp.ko
+else
+	@echo "  \e[33mSkipping kernel module (no kernel headers)\e[0m"
+endif
+
+dkms-install :
+	$(ECHO_PREFIX) mkdir -p /usr/src/hev-tcpfp-1.0
+	$(ECHO_PREFIX) cp $(SRCDIR)/dkms/hev-tcpfp-kmod.c /usr/src/hev-tcpfp-1.0/
+	$(ECHO_PREFIX) cp $(SRCDIR)/dkms/Kbuild /usr/src/hev-tcpfp-1.0/
+	$(ECHO_PREFIX) cp $(SRCDIR)/dkms/dkms.conf /usr/src/hev-tcpfp-1.0/
+	dkms add hev-tcpfp/1.0
+	dkms build hev-tcpfp/1.0
+	dkms install hev-tcpfp/1.0
+
+dkms-uninstall :
+	dkms remove hev-tcpfp/1.0 --all
+	$(ECHO_PREFIX) $(RM) -rf /usr/src/hev-tcpfp-1.0
+
 clean : tp-clean
 	$(ECHO_PREFIX) $(RM) -rf $(BINDIR) $(BUILDDIR)
 	@printf $(CLEANMSG) $(PROJECT)
 
-install : $(INSTDIR)/bin/$(PROJECT) $(INSTDIR)/etc/$(PROJECT).yml
+install : $(INSTDIR)/bin/$(PROJECT) $(INSTDIR)/etc/$(PROJECT).yml $(INSTDIR)/etc/$(PROJECT)-auth.json
 
 uninstall :
 	$(ECHO_PREFIX) $(RM) -rf $(INSTDIR)/bin/$(PROJECT)
@@ -103,6 +154,11 @@ $(INSTDIR)/bin/$(PROJECT) : $(EXEC_TARGET)
 	@printf $(INSTMSG) $< $@
 
 $(INSTDIR)/etc/$(PROJECT).yml : $(CONFIG)
+	$(ECHO_PREFIX) install -d -m 0755 $(dir $@)
+	$(ECHO_PREFIX) install -m 0644 $< $@
+	@printf $(INSTMSG) $< $@
+
+$(INSTDIR)/etc/$(PROJECT)-auth.json : $(CONFDIR)/auth.json
 	$(ECHO_PREFIX) install -d -m 0755 $(dir $@)
 	$(ECHO_PREFIX) install -m 0644 $< $@
 	@printf $(INSTMSG) $< $@

@@ -1,0 +1,47 @@
+/*
+ ============================================================================
+ Name        : hev-p0f-parser.h
+ Description : Parse p0f v3 signature strings into HevFingerprint
+ ============================================================================
+ */
+
+#ifndef __HEV_P0F_PARSER_H__
+#define __HEV_P0F_PARSER_H__
+
+#include "hev-fingerprint.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/*
+ * Parse a p0f v3 SYN signature string into a HevFingerprint struct.
+ *
+ * Format: ver:ittl:olen:mss:wsize,scale:olayout:quirks:pclass
+ *
+ * Examples:
+ *   "4:128:0:1460:65535,8:mss,nop,ws,nop,nop,sok:df,id+:0"
+ *   "4:64:0:*:mss*20,7:mss,sok,ts,nop,ws:df,id+:0"
+ *   "*:64:0:1460:mss*10,6:mss,nop,ws,nop,nop,ts,sok,eol+1:df:0"
+ *
+ * Returns heap-allocated HevFingerprint on success, NULL on parse error.
+ */
+HevFingerprint *hev_p0f_parse (const char *sig);
+
+/*
+ * Try to parse a SOCKS5 username as an encoded fingerprint.
+ * Dot-separated p0f format, optionally with active params after '~'.
+ *
+ * "4.128.0.1460.65535,8.mss,nop,ws,nop,nop,sok.df,id+.0"
+ * "4.64.0.1460.mss*20,7.mss,sok,ts,nop,ws.df.0~rto=l,isn=r,ts=1000"
+ *
+ * Returns NULL if username doesn't match the pattern.
+ */
+HevFingerprint *hev_p0f_parse_username (const char *username,
+                                        unsigned int len);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __HEV_P0F_PARSER_H__ */
