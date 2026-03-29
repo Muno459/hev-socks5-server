@@ -753,7 +753,7 @@ static int kp_retransmit_pre(struct kprobe *p, struct pt_regs *regs)
     /* SYN_SENT uses linear timeouts (no doubling) for first N retransmits.
      * For linear: set target directly. For exponential: halve (kernel doubles). */
     linear = (sk->sk_state == TCP_SYN_SENT &&
-              tp->total_rto <=
+              tp->total_rto <
               READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_syn_linear_timeouts));
 
     if (linear)
@@ -830,7 +830,14 @@ static int kp_ip_local_out_pre(struct kprobe *p, struct pt_regs *regs)
                 }
                 if (fp->req.rst_window) {
                     th->window = htons(fp->req.rst_window);
-                    /* TCP checksum will be computed by the kernel after us */
+                    {
+                        int tcp_len = ntohs(iph->tot_len) - ip_hdr_len;
+                        th->check = 0;
+                        th->check = csum_tcpudp_magic(iph->saddr, iph->daddr,
+                                                       tcp_len, IPPROTO_TCP,
+                                                       csum_partial((u8 *)th, tcp_len, 0));
+                        skb->ip_summed = CHECKSUM_NONE;
+                    }
                 }
             }
 
@@ -857,6 +864,81 @@ static int kp_ip_local_out_pre(struct kprobe *p, struct pt_regs *regs)
 static struct kprobe kp_ip_local_out = {
     .symbol_name = "ip_local_out",
     .pre_handler = kp_ip_local_out_pre,
+};
+
+/* --- kprobe: ip6_local_out --- IPv6 IP-layer modifications
+ *
+ * ip6_local_out(net, sk, skb) — same signature as ip_local_out.
+ * IPv6 has no IP ID field, no header checksum. We handle:
+ *   - RST/FIN/ACK DF (via frag header, but typically IPv6 doesn't fragment)
+ *   - RST TTL (hop_limit) and RST window
+ *   - Flow label
+ *
+ * x86_64: rdi=net, rsi=sk, rdx=skb
+ */
+static int kp_ip6_local_out_pre(struct kprobe *p, struct pt_regs *regs)
+{
+    struct sock *sk = (struct sock *)regs->si;
+    struct sk_buff *skb = (struct sk_buff *)regs->dx;
+    struct ipv6hdr *ip6h;
+    struct fp_entry *fp;
+    u64 cookie;
+
+    if (!sk || !skb) return 0;
+    cookie = atomic64_read(&sk->sk_cookie);
+    if (!cookie) return 0;
+
+    rcu_read_lock();
+    fp = fp_find(cookie);
+    rcu_read_unlock();
+    if (!fp) return 0;
+
+    ip6h = ipv6_hdr(skb);
+    if (!ip6h || ip6h->nexthdr != IPPROTO_TCP) return 0;
+
+    {
+        struct tcphdr *th;
+        unsigned int ip6_hdr_len = sizeof(struct ipv6hdr);
+
+        /* Flow label override */
+        if (fp->req.flow_label) {
+            ip6_flow_hdr(ip6h, ipv6_get_dsfield(ip6h), htonl(fp->req.flow_label));
+        }
+
+        /* RST/FIN/ACK handling */
+        if (skb->len >= ip6_hdr_len + sizeof(struct tcphdr)) {
+            th = (struct tcphdr *)((u8 *)ip6h + ip6_hdr_len);
+
+            if (th->rst) {
+                if (fp->req.rst_ttl) {
+                    ip6h->hop_limit = fp->req.rst_ttl;
+                }
+                if (fp->req.rst_window) {
+                    th->window = htons(fp->req.rst_window);
+                    {
+                        int tcp_len = ntohs(ip6h->payload_len);
+                        th->check = 0;
+                        th->check = csum_ipv6_magic(&ip6h->saddr, &ip6h->daddr,
+                                                     tcp_len, IPPROTO_TCP,
+                                                     csum_partial((u8 *)th, tcp_len, 0));
+                        skb->ip_summed = CHECKSUM_NONE;
+                    }
+                }
+            }
+
+            /* FIN DF: IPv6 doesn't have DF bit (no fragmentation at routers)
+             * but we still set hop_limit consistently if needed. */
+
+            /* ACK DF: same as above for IPv6 */
+        }
+    }
+
+    return 0;
+}
+
+static struct kprobe kp_ip6_local_out = {
+    .symbol_name = "ip6_local_out",
+    .pre_handler = kp_ip6_local_out_pre,
 };
 
 /* No netfilter hooks. Everything handled natively via kprobes + ftrace. */
@@ -930,6 +1012,10 @@ static int __init hev_tcpfp_init(void)
     if (ret < 0)
         pr_warn("hev-tcpfp: kprobe ip_local_out failed (%d)\n", ret);
 
+    ret = register_kprobe(&kp_ip6_local_out);
+    if (ret < 0)
+        pr_warn("hev-tcpfp: kprobe ip6_local_out failed (%d)\n", ret);
+
     hash_init(fp_table);
     isn_time_last_jiffies = jiffies;
     isn_time_counter = get_random_u32();
@@ -944,6 +1030,7 @@ static void __exit hev_tcpfp_exit(void)
     struct hlist_node *tmp;
     int bkt;
 
+    unregister_kprobe(&kp_ip6_local_out);
     unregister_kprobe(&kp_ip_local_out);
     unregister_kprobe(&kp_retransmit);
     if (ftrace_opts_target_addr) {

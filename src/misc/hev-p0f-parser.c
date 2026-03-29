@@ -234,6 +234,13 @@ parse_active_params (HevFingerprint *fp, const char *str)
                 fp->rto_count = rc;
                 if (rc > 0)
                     fp->rto_initial_ms = fp->rto_values[0];
+                /* Auto-set retransmit count from custom RTO count
+                 * if not explicitly set, so the kernel doesn't limit
+                 * retransmits to the default tcp_syn_retries (6). */
+                if (rc > 0 && !(fp->flags2 & HEV_FP_FLAG2_RETRANSMIT)) {
+                    fp->retransmit_count = rc;
+                    fp->flags2 |= HEV_FP_FLAG2_RETRANSMIT;
+                }
             } else {
                 fp->rto_initial_ms = atoi (val);
             }
