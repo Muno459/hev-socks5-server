@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 220">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 240">
   <defs>
     <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" style="stop-color:#0d1117"/>
@@ -8,56 +8,125 @@
       <stop offset="0%" style="stop-color:#79c0ff"/>
       <stop offset="100%" style="stop-color:#d2a8ff"/>
     </linearGradient>
-    <linearGradient id="line-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+    <linearGradient id="packet-win" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#3fb950" stop-opacity="0"/>
+      <stop offset="40%" style="stop-color:#3fb950"/>
+      <stop offset="60%" style="stop-color:#3fb950"/>
+      <stop offset="100%" style="stop-color:#3fb950" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="packet-mac" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#d2a8ff" stop-opacity="0"/>
+      <stop offset="40%" style="stop-color:#d2a8ff"/>
+      <stop offset="60%" style="stop-color:#d2a8ff"/>
+      <stop offset="100%" style="stop-color:#d2a8ff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="packet-linux" x1="0%" y1="0%" x2="100%" y2="0%">
       <stop offset="0%" style="stop-color:#79c0ff" stop-opacity="0"/>
-      <stop offset="50%" style="stop-color:#d2a8ff" stop-opacity="0.6"/>
+      <stop offset="40%" style="stop-color:#79c0ff"/>
+      <stop offset="60%" style="stop-color:#79c0ff"/>
       <stop offset="100%" style="stop-color:#79c0ff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="packet-out" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#f0883e" stop-opacity="0"/>
+      <stop offset="40%" style="stop-color:#f0883e"/>
+      <stop offset="60%" style="stop-color:#f0883e"/>
+      <stop offset="100%" style="stop-color:#f0883e" stop-opacity="0"/>
     </linearGradient>
   </defs>
 
-  <rect width="800" height="220" fill="url(#bg)" rx="10"/>
+  <rect width="800" height="240" fill="url(#bg)" rx="10"/>
 
-  <!-- Packet trace lines - slow, subtle, moving left to right -->
-  <g opacity="0.06">
-    <line x1="-100" y1="45" x2="900" y2="45" stroke="#79c0ff" stroke-width="0.5" stroke-dasharray="4 12">
-      <animate attributeName="stroke-dashoffset" from="0" to="-48" dur="6s" repeatCount="indefinite"/>
-    </line>
-    <line x1="-100" y1="105" x2="900" y2="105" stroke="#d2a8ff" stroke-width="0.5" stroke-dasharray="4 16">
-      <animate attributeName="stroke-dashoffset" from="0" to="-60" dur="8s" repeatCount="indefinite"/>
-    </line>
-    <line x1="-100" y1="165" x2="900" y2="165" stroke="#79c0ff" stroke-width="0.5" stroke-dasharray="4 20">
-      <animate attributeName="stroke-dashoffset" from="0" to="-72" dur="10s" repeatCount="indefinite"/>
-    </line>
+  <!-- Connection lines (static paths) -->
+  <g stroke="#21262d" stroke-width="1" fill="none">
+    <!-- Left side: client connections coming in -->
+    <path d="M 80,70 L 300,70 L 340,105"/>
+    <path d="M 80,105 L 340,105"/>
+    <path d="M 80,140 L 300,140 L 340,105"/>
+    <!-- Right side: single outgoing connection -->
+    <path d="M 460,105 L 720,105"/>
   </g>
 
-  <!-- Main title -->
-  <text x="400" y="95" text-anchor="middle" font-family="'SF Mono', 'Fira Code', 'Courier New', monospace" font-size="62" font-weight="700" fill="url(#title-grad)" letter-spacing="6">
+  <!-- Proxy box -->
+  <rect x="340" y="80" width="120" height="50" rx="6" fill="none" stroke="#30363d" stroke-width="1.5"/>
+  <rect x="340" y="80" width="120" height="50" rx="6" fill="#0d1117" opacity="0.8"/>
+
+  <!-- Proxy label -->
+  <text x="400" y="110" text-anchor="middle" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="13" font-weight="600" fill="#e6edf3">SKYPROXY</text>
+
+  <!-- Client labels -->
+  <text x="45" y="74" text-anchor="middle" font-family="'SF Mono','Courier New',monospace" font-size="9" fill="#484f58">WIN</text>
+  <text x="45" y="109" text-anchor="middle" font-family="'SF Mono','Courier New',monospace" font-size="9" fill="#484f58">MAC</text>
+  <text x="45" y="144" text-anchor="middle" font-family="'SF Mono','Courier New',monospace" font-size="9" fill="#484f58">LNX</text>
+
+  <!-- Client dots -->
+  <circle cx="70" cy="70" r="4" fill="none" stroke="#3fb950" stroke-width="1"/>
+  <circle cx="70" cy="105" r="4" fill="none" stroke="#d2a8ff" stroke-width="1"/>
+  <circle cx="70" cy="140" r="4" fill="none" stroke="#79c0ff" stroke-width="1"/>
+
+  <!-- Target dot -->
+  <circle cx="730" cy="105" r="4" fill="none" stroke="#f0883e" stroke-width="1"/>
+  <text x="755" y="109" font-family="'SF Mono','Courier New',monospace" font-size="9" fill="#484f58">DST</text>
+
+  <!-- Animated packets: Windows client -> proxy -->
+  <circle r="3" fill="#3fb950" opacity="0.9">
+    <animateMotion dur="3s" repeatCount="indefinite" begin="0s">
+      <mpath href="#path-win"/>
+    </animateMotion>
+  </circle>
+  <path id="path-win" d="M 80,70 L 300,70 L 340,105" fill="none" stroke="none"/>
+
+  <!-- Animated packets: macOS client -> proxy -->
+  <circle r="3" fill="#d2a8ff" opacity="0.9">
+    <animateMotion dur="2.5s" repeatCount="indefinite" begin="0.8s">
+      <mpath href="#path-mac"/>
+    </animateMotion>
+  </circle>
+  <path id="path-mac" d="M 80,105 L 340,105" fill="none" stroke="none"/>
+
+  <!-- Animated packets: Linux client -> proxy -->
+  <circle r="3" fill="#79c0ff" opacity="0.9">
+    <animateMotion dur="3.5s" repeatCount="indefinite" begin="1.5s">
+      <mpath href="#path-linux"/>
+    </animateMotion>
+  </circle>
+  <path id="path-linux" d="M 80,140 L 300,140 L 340,105" fill="none" stroke="none"/>
+
+  <!-- Animated packets: proxy -> target (transformed) -->
+  <circle r="3" fill="#f0883e" opacity="0.9">
+    <animateMotion dur="2s" repeatCount="indefinite" begin="0.3s">
+      <mpath href="#path-out"/>
+    </animateMotion>
+  </circle>
+  <circle r="3" fill="#f0883e" opacity="0.9">
+    <animateMotion dur="2s" repeatCount="indefinite" begin="1.3s">
+      <mpath href="#path-out"/>
+    </animateMotion>
+  </circle>
+  <circle r="3" fill="#f0883e" opacity="0.9">
+    <animateMotion dur="2s" repeatCount="indefinite" begin="2.1s">
+      <mpath href="#path-out"/>
+    </animateMotion>
+  </circle>
+  <path id="path-out" d="M 460,105 L 720,105" fill="none" stroke="none"/>
+
+  <!-- Fingerprint transform indicator -->
+  <text x="400" y="145" text-anchor="middle" font-family="'SF Mono','Courier New',monospace" font-size="8" fill="#484f58">
+    <tspan fill="#3fb950">TTL:128</tspan>
+    <tspan fill="#484f58"> / </tspan>
+    <tspan fill="#d2a8ff">TTL:64</tspan>
+    <tspan fill="#484f58"> / </tspan>
+    <tspan fill="#79c0ff">TTL:64</tspan>
+    <tspan fill="#484f58"> -> </tspan>
+    <tspan fill="#f0883e">spoofed</tspan>
+  </text>
+
+  <!-- Main title below diagram -->
+  <text x="400" y="190" text-anchor="middle" font-family="'SF Mono','Fira Code','Courier New',monospace" font-size="28" font-weight="700" fill="url(#title-grad)" letter-spacing="8">
     SKYPROXY
   </text>
 
-  <!-- Subtitle -->
-  <text x="400" y="130" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" fill="#8b949e" letter-spacing="3">
-    NATIVE TCP/IP FINGERPRINT SPOOFING
+  <!-- Tagline -->
+  <text x="400" y="215" text-anchor="middle" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="11" fill="#484f58" letter-spacing="2">
+    NATIVE TCP/IP FINGERPRINT SPOOFING  //  ZERO NETFILTER  //  P0F DISTANCE 0
   </text>
-
-  <!-- Bottom info line -->
-  <text x="400" y="165" text-anchor="middle" font-family="'SF Mono', 'Fira Code', 'Courier New', monospace" font-size="11" fill="#484f58">
-    ftrace + kprobes  //  zero netfilter  //  p0f distance 0
-  </text>
-
-  <!-- Accent line with slow pulse -->
-  <rect x="250" y="182" width="300" height="1" fill="url(#line-grad)">
-    <animate attributeName="opacity" values="0.4;0.8;0.4" dur="4s" repeatCount="indefinite"/>
-  </rect>
-
-  <!-- Corner accents -->
-  <polyline points="20,30 20,20 30,20" fill="none" stroke="#30363d" stroke-width="1.5"/>
-  <polyline points="770,20 780,20 780,30" fill="none" stroke="#30363d" stroke-width="1.5"/>
-  <polyline points="20,190 20,200 30,200" fill="none" stroke="#30363d" stroke-width="1.5"/>
-  <polyline points="770,200 780,200 780,190" fill="none" stroke="#30363d" stroke-width="1.5"/>
-
-  <!-- Blinking cursor after title -->
-  <rect x="588" y="72" width="3" height="28" fill="#79c0ff">
-    <animate attributeName="opacity" values="1;0;1" dur="1.2s" repeatCount="indefinite"/>
-  </rect>
 </svg>
