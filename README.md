@@ -43,17 +43,17 @@ make
 ./bin/skyproxy conf/main.yml
 ```
 
-The default auth has a user `fp` with password `password(*)`. The fingerprint goes inside the parentheses:
+The default auth has a user `fp` with password `pass(*)`. The fingerprint goes inside the parentheses:
 
 ```bash
 # Windows 11 fingerprint
-curl -x socks5h://user:password(win11)@127.0.0.1:1080 http://example.com
+curl -x socks5h://user:pass(win11)@127.0.0.1:1080 http://example.com
 
 # macOS fingerprint
-curl -x socks5h://user:password(macos)@127.0.0.1:1080 http://example.com
+curl -x socks5h://user:pass(macos)@127.0.0.1:1080 http://example.com
 
 # Mirror the client's own TCP fingerprint
-curl -x socks5h://user:password(mirror)@127.0.0.1:1080 http://example.com
+curl -x socks5h://user:pass(mirror)@127.0.0.1:1080 http://example.com
 ```
 
 Or configure per-user profiles in `conf/auth.json`:
@@ -110,12 +110,12 @@ SkyProxy auto-detects the format from the input:
 
 **Presets**: `win11`, `win10`, `windows`, `winxp`, `macos`, `mac`, `ios`, `iphone`, `android`, `linux`
 ```bash
-curl -x socks5h://user:password(win11)@server:1080 http://target
+curl -x socks5h://user:pass(win11)@server:1080 http://target
 ```
 
 **Mirror**: copies the connecting client's TCP fingerprint using [`TCP_SAVE_SYN`](https://github.com/torvalds/linux/commit/cd8ae85299d54155702a56811b2e035e63064d3d) (kernel 4.2+, originally developed at Google). Detects OS family from the SYN and applies matching active parameters (RTO, option stripping).
 ```bash
-curl -x socks5h://user:password(mirror)@server:1080 http://target
+curl -x socks5h://user:pass(mirror)@server:1080 http://target
 ```
 
 | Client SYN | Detected OS | Active Preset |
