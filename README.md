@@ -43,15 +43,27 @@ make
 ./bin/skyproxy conf/main.yml
 ```
 
-```bash
-# Connect as Windows 11
-curl -x socks5h://win10:pass@127.0.0.1:1080 http://example.com
+The default auth has a user `fp` with password `secret(*)`. The fingerprint goes inside the parentheses:
 
-# Or use a preset
+```bash
+# Windows 11 fingerprint
+curl -x socks5h://fp:secret(win11)@127.0.0.1:1080 http://example.com
+
+# macOS fingerprint
 curl -x socks5h://fp:secret(macos)@127.0.0.1:1080 http://example.com
 
-# Or mirror the client's own fingerprint
+# Mirror the client's own TCP fingerprint
 curl -x socks5h://fp:secret(mirror)@127.0.0.1:1080 http://example.com
+```
+
+Or configure per-user profiles in `conf/auth.json`:
+
+```json
+{ "username": "user", "password": "pass", "preset": "win11" }
+```
+
+```bash
+curl -x socks5h://user:pass@127.0.0.1:1080 http://example.com
 ```
 
 ### Requirements
