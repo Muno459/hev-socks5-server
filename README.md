@@ -43,14 +43,18 @@ make
 ./bin/skyproxy conf/main.yml
 ```
 
-The default auth has a user `fp` with password `pass(*)`. The fingerprint goes inside the parentheses:
+The default auth has a user `user` with password `pass(*)`. The fingerprint goes inside the parentheses:
 
 ```bash
-# Windows 11 fingerprint
+# Preset
 curl -x socks5h://user:pass(win11)@127.0.0.1:1080 http://example.com
-
-# macOS fingerprint
 curl -x socks5h://user:pass(macos)@127.0.0.1:1080 http://example.com
+
+# Custom p0f signature (dots replace colons)
+curl -x socks5h://user:pass(4.128.0.1460.65535,8.mss,nop,ws,nop,nop,sok.df,id+.0)@127.0.0.1:1080 http://example.com
+
+# Custom JA4T signature
+curl -x socks5h://user:pass(65535_2-1-3-1-1-4_1460_8)@127.0.0.1:1080 http://example.com
 
 # Mirror the client's own TCP fingerprint
 curl -x socks5h://user:pass(mirror)@127.0.0.1:1080 http://example.com
@@ -178,23 +182,28 @@ misc:
 
 ```json
 [
+  { "username": "user", "password": "pass(*)" },
+
   { "username": "tom", "password": "pass" },
 
   { "username": "win10", "password": "pass",
     "p0f": "4:128:0:1460:65535,8:mss,nop,ws,nop,nop,sok:df,id+:0~rto=1000-2000-4000-8000" },
 
-  { "username": "stealth", "password": "pass", "preset": "macos" },
-
   { "username": "fast", "password": "pass",
     "ja4t": "65535_2-1-3-1-1-4_1460_8_1-2-4-8" },
 
-  { "username": "transparent", "password": "pass", "preset": "mirror" },
+  { "username": "stealth", "password": "pass", "preset": "macos" },
 
-  { "username": "fp", "password": "secret(*)" }
+  { "username": "transparent", "password": "pass", "preset": "mirror" }
 ]
 ```
 
-Accepts `p0f`, `ja4t`, or `preset` field names. All auto-detect the format. `password: "secret(*)"` enables dynamic fingerprinting via the password field.
+Each user can have a fingerprint via three field names:
+- `p0f` - custom p0f v3 signature
+- `ja4t` - custom JA4T signature
+- `preset` - built-in preset name or `mirror`
+
+All three auto-detect the format. `password: "pass(*)"` enables dynamic fingerprinting where the client sends the fingerprint inside the parentheses at connect time.
 
 Reload auth without restarting:
 
