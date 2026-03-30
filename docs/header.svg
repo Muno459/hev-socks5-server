@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 200">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0d1117"/>
+      <stop offset="100%" style="stop-color:#161b22"/>
+    </linearGradient>
+    <linearGradient id="text-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#58a6ff">
+        <animate attributeName="stop-color" values="#58a6ff;#bc8cff;#f778ba;#58a6ff" dur="6s" repeatCount="indefinite"/>
+      </stop>
+      <stop offset="50%" style="stop-color:#bc8cff">
+        <animate attributeName="stop-color" values="#bc8cff;#f778ba;#58a6ff;#bc8cff" dur="6s" repeatCount="indefinite"/>
+      </stop>
+      <stop offset="100%" style="stop-color:#f778ba">
+        <animate attributeName="stop-color" values="#f778ba;#58a6ff;#bc8cff;#f778ba" dur="6s" repeatCount="indefinite"/>
+      </stop>
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="2" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="800" height="200" fill="url(#bg)" rx="12"/>
+
+  <!-- Animated scan line -->
+  <rect x="0" y="0" width="800" height="2" fill="#58a6ff" opacity="0.15">
+    <animate attributeName="y" values="0;200;0" dur="4s" repeatCount="indefinite"/>
+  </rect>
+
+  <!-- Network dots background -->
+  <g opacity="0.08">
+    <circle cx="50" cy="40" r="1.5" fill="#58a6ff"><animate attributeName="opacity" values="0.3;1;0.3" dur="3s" repeatCount="indefinite"/></circle>
+    <circle cx="150" cy="80" r="1" fill="#bc8cff"><animate attributeName="opacity" values="1;0.3;1" dur="4s" repeatCount="indefinite"/></circle>
+    <circle cx="250" cy="30" r="1.5" fill="#f778ba"><animate attributeName="opacity" values="0.5;1;0.5" dur="2.5s" repeatCount="indefinite"/></circle>
+    <circle cx="650" cy="60" r="1" fill="#58a6ff"><animate attributeName="opacity" values="0.3;1;0.3" dur="3.5s" repeatCount="indefinite"/></circle>
+    <circle cx="720" cy="140" r="1.5" fill="#bc8cff"><animate attributeName="opacity" values="1;0.3;1" dur="2s" repeatCount="indefinite"/></circle>
+    <circle cx="100" cy="160" r="1" fill="#f778ba"><animate attributeName="opacity" values="0.5;1;0.5" dur="4.5s" repeatCount="indefinite"/></circle>
+    <circle cx="550" cy="170" r="1.5" fill="#58a6ff"><animate attributeName="opacity" values="0.3;1;0.3" dur="3s" repeatCount="indefinite"/></circle>
+    <circle cx="400" cy="20" r="1" fill="#bc8cff"><animate attributeName="opacity" values="1;0.5;1" dur="2.8s" repeatCount="indefinite"/></circle>
+  </g>
+
+  <!-- Main title -->
+  <text x="400" y="85" text-anchor="middle" font-family="'Courier New', monospace" font-size="56" font-weight="bold" fill="url(#text-grad)" filter="url(#glow)">
+    SKYPROXY
+  </text>
+
+  <!-- Subtitle -->
+  <text x="400" y="120" text-anchor="middle" font-family="'Segoe UI', Arial, sans-serif" font-size="15" fill="#8b949e" letter-spacing="4">
+    HIGH-PERFORMANCE SOCKS5 PROXY
+  </text>
+
+  <!-- Animated typing effect for tagline -->
+  <text x="400" y="150" text-anchor="middle" font-family="'Courier New', monospace" font-size="13" fill="#58a6ff">
+    Native TCP/IP fingerprint spoofing via ftrace + kprobes
+    <animate attributeName="opacity" values="0.6;1;0.6" dur="3s" repeatCount="indefinite"/>
+  </text>
+
+  <!-- Bottom accent line -->
+  <rect x="200" y="175" width="400" height="1" fill="url(#text-grad)" opacity="0.5">
+    <animate attributeName="width" values="0;400;0" dur="8s" repeatCount="indefinite"/>
+    <animate attributeName="x" values="400;200;400" dur="8s" repeatCount="indefinite"/>
+  </rect>
+</svg>
