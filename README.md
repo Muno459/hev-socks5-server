@@ -176,7 +176,7 @@ misc:
   { "username": "fast", "password": "pass",
     "ja4t": "65535_2-1-3-1-1-4_1460_8_1-2-4-8" },
 
-  { "username": "transparent", "password": "pass", "p0f": "mirror" },
+  { "username": "transparent", "password": "pass", "preset": "mirror" },
 
   { "username": "fp", "password": "secret(*)" }
 ]
