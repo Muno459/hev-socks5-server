@@ -1,67 +1,63 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 200">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 220">
   <defs>
     <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
       <stop offset="0%" style="stop-color:#0d1117"/>
       <stop offset="100%" style="stop-color:#161b22"/>
     </linearGradient>
-    <linearGradient id="text-grad" x1="0%" y1="0%" x2="100%" y2="0%">
-      <stop offset="0%" style="stop-color:#58a6ff">
-        <animate attributeName="stop-color" values="#58a6ff;#bc8cff;#f778ba;#58a6ff" dur="6s" repeatCount="indefinite"/>
-      </stop>
-      <stop offset="50%" style="stop-color:#bc8cff">
-        <animate attributeName="stop-color" values="#bc8cff;#f778ba;#58a6ff;#bc8cff" dur="6s" repeatCount="indefinite"/>
-      </stop>
-      <stop offset="100%" style="stop-color:#f778ba">
-        <animate attributeName="stop-color" values="#f778ba;#58a6ff;#bc8cff;#f778ba" dur="6s" repeatCount="indefinite"/>
-      </stop>
+    <linearGradient id="title-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#79c0ff"/>
+      <stop offset="100%" style="stop-color:#d2a8ff"/>
     </linearGradient>
-    <filter id="glow">
-      <feGaussianBlur stdDeviation="2" result="blur"/>
-      <feMerge>
-        <feMergeNode in="blur"/>
-        <feMergeNode in="SourceGraphic"/>
-      </feMerge>
-    </filter>
+    <linearGradient id="line-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#79c0ff" stop-opacity="0"/>
+      <stop offset="50%" style="stop-color:#d2a8ff" stop-opacity="0.6"/>
+      <stop offset="100%" style="stop-color:#79c0ff" stop-opacity="0"/>
+    </linearGradient>
   </defs>
 
-  <rect width="800" height="200" fill="url(#bg)" rx="12"/>
+  <rect width="800" height="220" fill="url(#bg)" rx="10"/>
 
-  <!-- Animated scan line -->
-  <rect x="0" y="0" width="800" height="2" fill="#58a6ff" opacity="0.15">
-    <animate attributeName="y" values="0;200;0" dur="4s" repeatCount="indefinite"/>
-  </rect>
-
-  <!-- Network dots background -->
-  <g opacity="0.08">
-    <circle cx="50" cy="40" r="1.5" fill="#58a6ff"><animate attributeName="opacity" values="0.3;1;0.3" dur="3s" repeatCount="indefinite"/></circle>
-    <circle cx="150" cy="80" r="1" fill="#bc8cff"><animate attributeName="opacity" values="1;0.3;1" dur="4s" repeatCount="indefinite"/></circle>
-    <circle cx="250" cy="30" r="1.5" fill="#f778ba"><animate attributeName="opacity" values="0.5;1;0.5" dur="2.5s" repeatCount="indefinite"/></circle>
-    <circle cx="650" cy="60" r="1" fill="#58a6ff"><animate attributeName="opacity" values="0.3;1;0.3" dur="3.5s" repeatCount="indefinite"/></circle>
-    <circle cx="720" cy="140" r="1.5" fill="#bc8cff"><animate attributeName="opacity" values="1;0.3;1" dur="2s" repeatCount="indefinite"/></circle>
-    <circle cx="100" cy="160" r="1" fill="#f778ba"><animate attributeName="opacity" values="0.5;1;0.5" dur="4.5s" repeatCount="indefinite"/></circle>
-    <circle cx="550" cy="170" r="1.5" fill="#58a6ff"><animate attributeName="opacity" values="0.3;1;0.3" dur="3s" repeatCount="indefinite"/></circle>
-    <circle cx="400" cy="20" r="1" fill="#bc8cff"><animate attributeName="opacity" values="1;0.5;1" dur="2.8s" repeatCount="indefinite"/></circle>
+  <!-- Packet trace lines - slow, subtle, moving left to right -->
+  <g opacity="0.06">
+    <line x1="-100" y1="45" x2="900" y2="45" stroke="#79c0ff" stroke-width="0.5" stroke-dasharray="4 12">
+      <animate attributeName="stroke-dashoffset" from="0" to="-48" dur="6s" repeatCount="indefinite"/>
+    </line>
+    <line x1="-100" y1="105" x2="900" y2="105" stroke="#d2a8ff" stroke-width="0.5" stroke-dasharray="4 16">
+      <animate attributeName="stroke-dashoffset" from="0" to="-60" dur="8s" repeatCount="indefinite"/>
+    </line>
+    <line x1="-100" y1="165" x2="900" y2="165" stroke="#79c0ff" stroke-width="0.5" stroke-dasharray="4 20">
+      <animate attributeName="stroke-dashoffset" from="0" to="-72" dur="10s" repeatCount="indefinite"/>
+    </line>
   </g>
 
   <!-- Main title -->
-  <text x="400" y="85" text-anchor="middle" font-family="'Courier New', monospace" font-size="56" font-weight="bold" fill="url(#text-grad)" filter="url(#glow)">
+  <text x="400" y="95" text-anchor="middle" font-family="'SF Mono', 'Fira Code', 'Courier New', monospace" font-size="62" font-weight="700" fill="url(#title-grad)" letter-spacing="6">
     SKYPROXY
   </text>
 
   <!-- Subtitle -->
-  <text x="400" y="120" text-anchor="middle" font-family="'Segoe UI', Arial, sans-serif" font-size="15" fill="#8b949e" letter-spacing="4">
-    HIGH-PERFORMANCE SOCKS5 PROXY
+  <text x="400" y="130" text-anchor="middle" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="14" fill="#8b949e" letter-spacing="3">
+    NATIVE TCP/IP FINGERPRINT SPOOFING
   </text>
 
-  <!-- Animated typing effect for tagline -->
-  <text x="400" y="150" text-anchor="middle" font-family="'Courier New', monospace" font-size="13" fill="#58a6ff">
-    Native TCP/IP fingerprint spoofing via ftrace + kprobes
-    <animate attributeName="opacity" values="0.6;1;0.6" dur="3s" repeatCount="indefinite"/>
+  <!-- Bottom info line -->
+  <text x="400" y="165" text-anchor="middle" font-family="'SF Mono', 'Fira Code', 'Courier New', monospace" font-size="11" fill="#484f58">
+    ftrace + kprobes  //  zero netfilter  //  p0f distance 0
   </text>
 
-  <!-- Bottom accent line -->
-  <rect x="200" y="175" width="400" height="1" fill="url(#text-grad)" opacity="0.5">
-    <animate attributeName="width" values="0;400;0" dur="8s" repeatCount="indefinite"/>
-    <animate attributeName="x" values="400;200;400" dur="8s" repeatCount="indefinite"/>
+  <!-- Accent line with slow pulse -->
+  <rect x="250" y="182" width="300" height="1" fill="url(#line-grad)">
+    <animate attributeName="opacity" values="0.4;0.8;0.4" dur="4s" repeatCount="indefinite"/>
+  </rect>
+
+  <!-- Corner accents -->
+  <polyline points="20,30 20,20 30,20" fill="none" stroke="#30363d" stroke-width="1.5"/>
+  <polyline points="770,20 780,20 780,30" fill="none" stroke="#30363d" stroke-width="1.5"/>
+  <polyline points="20,190 20,200 30,200" fill="none" stroke="#30363d" stroke-width="1.5"/>
+  <polyline points="770,200 780,200 780,190" fill="none" stroke="#30363d" stroke-width="1.5"/>
+
+  <!-- Blinking cursor after title -->
+  <rect x="588" y="72" width="3" height="28" fill="#79c0ff">
+    <animate attributeName="opacity" values="1;0;1" dur="1.2s" repeatCount="indefinite"/>
   </rect>
 </svg>
